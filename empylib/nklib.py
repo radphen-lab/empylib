@@ -8,19 +8,81 @@ Created on Sun Nov  7 17:25:53 2021
 """
 import os
 import platform
+from pyexpat import model
+from matplotlib.pylab import gamma
 import numpy as _np 
 import pandas as _pd
+from scipy import interpolate
 from scipy.integrate import quad
+from scipy.optimize import least_squares
 from typing import Callable # used to check callable variables
 from pathlib import Path
 # import refidx as ri
-from .utils import _ndarray_check, convert_units, _check_mie_inputs, _warn_extrapolation
+from .utils import _ndarray_check, convert_units as _convert_units, _check_mie_inputs, _warn_extrapolation
 from typing import List as _List, Union as _Union
 import yaml
 import requests
 from io import StringIO
+import inspect as _inspect
 
-def get_nkfile(lam, MaterialName, get_from_local_path = False):
+__all__ = ('get_nkfile', 'get_ri_info', 
+           'lorentz', 'drude', 'tauc_lorentz', 'gaussian', 'multi_oscillator', 'fit_to_oscillator',
+           'emt_multilayer_sphere', 'emt_brugg', 'eps_real_kkr',
+           'SiO2', 'Silica', 'CaCO3', 'BaSO4', 'BaF2', 'TiO2',
+           'BiVO4_mono_a', 'BiVO4_mono_b', 'BiVO4_mono_c', 'BiVO4', 'Cu2O', 'ZnO',
+            'MgO', 'Al2O3', 'ZnS', 'GSTa', 'GSTc', 'VO2M', 'VO2R', 'VO2',
+            'Si', 'gold', 'silver', 'Cu', 'Al', 'Mg',
+            'HDPE', 'PDMS', 'PMMA', 'PVDF', 'H2O')
+
+def blend_model(lam, nk_df, nk_model, blend_low=None, blend_high=None):
+
+    # get inside index based on zero values of nk_interp
+    lam_min, lam_max = float(nk_df.index[0]), float(nk_df.index[-1])
+    inside = (lam >= lam_min) & (lam <= lam_max)
+
+    # interpolate nk data
+    nk_interp = _np.interp(lam, nk_df.index, nk_df['n'] + 1j*nk_df['k'])
+    nk_out = _np.empty_like(nk_interp, dtype=complex)
+    nk_out[~inside] = nk_model[~inside]     # outside data range: model
+    nk_out[inside] = nk_interp[inside]    # inside data range: interpolated data
+    
+    if blend_low is None:
+        # set value based on order of magnitude of lam_min
+        blend_low = 10**_np.round(_np.log10(lam_min))
+
+    if blend_high is None:
+        # set value based on order of magnitude of lam_max
+        blend_high = 10**_np.round(_np.log10(lam_max))
+
+    # blend lower end data to smooth transition
+    if blend_low > 0:
+        # Blend in [wl_min, wl_min+blend_window] and [wl_max-blend_window, wl_max]
+        bw = float(blend_low)
+
+        # lower edge
+        low = (lam >= lam_min) & (lam <= lam_min + bw)
+        if _np.any(low):
+            t = (lam[low] - lam_min) / bw  # 0..1
+            # smoothstep
+            s = t*t*(3 - 2*t)
+            nk_itp = nk_interp[low] 
+            nk_out[low] = (1 - s)*nk_model[low] + s*nk_itp
+
+    # blend higher end data to smooth transition
+    if blend_high > 0:
+        bw = float(blend_high)
+        # upper edge
+        high = (lam <= lam_max) & (lam >= lam_max - bw)
+        if _np.any(high):
+            t = (lam_max - lam[high]) / bw  # 0..1
+            s = t*t*(3 - 2*t)
+            nk_itp = nk_interp[high]
+            nk_out[high] = (1 - s)*nk_model[high] + s*nk_itp
+
+    return nk_out
+
+def get_nkfile(lam, MaterialName=None, get_from_local_path = False, lam_units = 'um', *, 
+               extrapolate = 'flat'):
     '''
     Reads a tabulated *.nk file and returns an interpolated
     1D numpy array with the complex refractive index
@@ -31,6 +93,12 @@ def get_nkfile(lam, MaterialName, get_from_local_path = False):
         Wavelengths to interpolate (um).
     MaterialName : string
         Name of *.nk file
+    get_from_local_path : bool
+        If True, retrieves nk file from local empylib/nk_files folder. If False, retrieves from working directory.
+    lam_units : string
+        Units of input wavelength (default 'um'). Options: 'nm', 'um', 'mm', 'm'
+    extrapolate : None, string or dict
+        Extrapolation method or parameters (default 'flat'). Options: False, 'flat', or dict with oscillator parameters
 
     Returns
     -------
@@ -39,10 +107,6 @@ def get_nkfile(lam, MaterialName, get_from_local_path = False):
     data: ndarray
         Original tabulated data from file
     '''
-
-    # check if lam is not ndarray
-    lam, lam_isfloat = _ndarray_check(lam)   
-    
     # retrieve local path
     if get_from_local_path:
         # if function is called locally
@@ -68,26 +132,20 @@ def get_nkfile(lam, MaterialName, get_from_local_path = False):
     nk_df.columns = ['n', 'k']
     nk_df.index.name = 'lambda'
 
-    # create complex refractive index using interpolation form nkfile
-    N = _np.interp(lam, nk_df.index, nk_df['n'] + 1j*nk_df['k'])
+    # convert lam to um
+    nk_df.index = _convert_units(nk_df.index, lam_units, to='um')
 
-    # if N.real or N.imag < 0, make it = 0
-    N[N.real<0] = 0                + 1j*N[N.real<0].imag # real part = 0 (keep imag part)
-    
-    # warning if extrapolated values
-    lo, hi = float(nk_df.index[0]), float(nk_df.index[-1])
-    _warn_extrapolation(lam, lo, hi, label=MaterialName, quantity="refractive index")
-    
-    # if lam was float (orginaly), convert N to a complex value
-    return complex(N[0]) if lam_isfloat else N, nk_df
-    # return N(lam), nk_df
+    return _process_nk_data(lam, nk_df, MaterialName, extrapolate)
 
-def read_nk_yaml_from_ri_info(url):
+def ri_info_data(shelf,book,page):
     """
     Reads a YAML file containing 'nk' tabulated optical data from a URL and returns:
     - lam: ndarray of wavelengths
     - nk: ndarray of complex refractive indices (n + ik)
     """
+    url_root = 'https://refractiveindex.info/database/data/' 
+    url = url_root  + shelf + '/'  + book  + '/nk/' + page + '.yml'
+
     # Download YAML content
     response = requests.get(url)
     response.raise_for_status()
@@ -100,10 +158,12 @@ def read_nk_yaml_from_ri_info(url):
 
     # Read into DataFrame using regex-based separator
     nk_df = _pd.read_csv(StringIO(nk_text), sep=r'\s+', names=['wavelength', 'n', 'k'])
+    nk_df.index = nk_df['wavelength']           # set wavelength as index
+    nk_df = nk_df.drop(columns=['wavelength'])  # remove 'wavelength' column
 
     return nk_df
 
-def get_ri_info(lam,shelf,book,page):
+def get_ri_info(lam,shelf,book,page, *, extrapolate = 'flat'):
     '''
     Extract refractive index from refractiveindex.info database. This code
     uses the refidx package from Bejamin Vial (https://gitlab.com/benvial/refidx)
@@ -118,6 +178,8 @@ def get_ri_info(lam,shelf,book,page):
         Material name
     page: string
         Refractive index source   
+    extrapolate : bool, string or dict
+        Extrapolation method or parameters (default 'flat'). Options: False, 'flat', or dict with oscillator parameters
 
     Returns
     -------
@@ -126,28 +188,61 @@ def get_ri_info(lam,shelf,book,page):
     data: ndarray
         Original tabulated data from file
     '''
-
-    url_root = 'https://refractiveindex.info/database/data/' 
-    url = url_root  + shelf + '/'  + book  + '/nk/' + page + '.yml'
-    nk_df = read_nk_yaml_from_ri_info(url)
+    nk_df = ri_info_data(shelf,book,page)
     MaterialName = book + '_' + page
-    
-    # Convert to NumPy arrays
-    matLambda = nk_df['wavelength'].to_numpy()
-    mat_nk = nk_df['n'].to_numpy() + 1j*nk_df['k'].to_numpy()
 
-    # interpolate based on "lam"
-    N = _np.interp(lam, matLambda, mat_nk)
+    return _process_nk_data(lam, nk_df, MaterialName, extrapolate)
+
+def _process_nk_data(lam, nk_df, MaterialName, extrapolate):
+    '''
+    Process nk dataframe and interpolate to desired wavelengths.
     
-    # CHeck data and adjust
-    N[N.real<0]    = 0                + 1j*N[N.real<0].imag # real part = 0 (keep imag part)
-    # N = _fix_nk_anomalous(lam, N.real, N.imag)
+    Parameters
+    ----------
+    lam : ndarray
+        Wavelengths to interpolate (um).
+    nk_df : DataFrame
+        DataFrame containing 'n' and 'k' columns indexed by wavelength.
+    MaterialName : string
+        Name of the material for labeling purposes.
+    extrapolate : bool, string or dict
+        Extrapolation method or parameters (default 'flat'). Options: False, 'flat', or dict with oscillator parameters.
+
+    Returns
+    -------
+    N : ndarray
+        Interpolated complex refractive index
+    nk_df : DataFrame
+        Original tabulated data from file
+    '''
+    
+    # check if lam is not ndarray
+    lam, lam_isfloat = _ndarray_check(lam) 
+
+    # create complex refractive index using interpolation form nkfile
+    nk_df_complex = nk_df['n'] + 1j*nk_df['k']
+    if extrapolate is False:
+        N = _np.interp(lam, nk_df.index, nk_df_complex, 
+                       left = complex(0, 0), right = complex(0, 0))
+    
+    elif extrapolate == 'flat':
+        N = _np.interp(lam, nk_df.index, nk_df_complex)
+    
+    elif isinstance(extrapolate, dict):
+        N_model = multi_oscillator(lam, extrapolate)
+        N = blend_model(lam, nk_df, N_model)
+    else:
+        raise ValueError("Extrapolation method not recognized. Use False, 'flat', or dict with oscillator parameters.") 
+
+    # if N.real or N.imag < 0, make it = 0
+    N[N.real<0] = 0                + 1j*N[N.real<0].imag # real part = 0 (keep imag part)
     
     # warning if extrapolated values
-    lo, hi = float(matLambda[0]), float(matLambda[-1])
+    lo, hi = float(nk_df.index[0]), float(nk_df.index[-1])
     _warn_extrapolation(lam, lo, hi, label=MaterialName, quantity="refractive index")
-
-    return N, nk_df
+    
+    # if lam was float (orginaly), convert N to a complex value
+    return complex(N[0]) if lam_isfloat else N, nk_df
 
 '''
     --------------------------------------------------------------------
@@ -243,35 +338,7 @@ def _fix_nk_anomalous(lam, n, k):
 
     return n_new + 1j*k_new
 
-def eps_lorentz(A,gamma,E0,lam):
-    '''
-    Lorentz oscillator model for dielectric constant based on
-    parameters from ellipsometry measurements.
-
-    Parameters
-    ----------
-    A   : float
-        Oscillator's amplitude  
-    
-    gamma  : float
-        Broadening of the oscillator(eV)
-    
-    E0  : float
-        Oscillator's resonant energy (eV)
-        
-    lam : ndarray
-        Wavelengths range (um)
-
-    Returns
-    -------
-    eps : ndarray (complex)
-        Complex dielectric constant
-    '''
-
-    wp = _np.sqrt(A*gamma*E0)
-    return lorentz(0,wp,E0,gamma,lam)**2
-
-def eps_gaussian(A,Br,E0,lam):
+def gaussian(lam, A,Br,E0):
     '''
     Gaussian oscillator model for dielectric constant based on
     parameters from ellipsometry measurements. The model first calculates
@@ -303,14 +370,15 @@ def eps_gaussian(A,Br,E0,lam):
                     - A*_np.exp(-(f*(E + E0)/Br)**2)
 
     # get real and imaginary part of dielectric constant
-    E = convert_units(lam,'um','eV')                               # lambda range in eV
+    E = _convert_units(lam,'um','eV')                               # lambda range in eV
     a, b = max(E0 - 5*Br,0), E0 + 5*Br                             # integration range
     eps_re = eps_real_kkr(lam,eps_G,int_range=(a, b), cshift=1e-4) # get real part from KK
     eps_im = eps_G(E)                                              # imaginary component
 
-    return eps_re + 1j*eps_im
+    eps = eps_re + 1j*eps_im
+    return _np.sqrt(eps)
 
-def eps_tauc_lorentz(A,C,E0,Eg,lam):
+def tauc_lorentz(lam, A,C,E0,Eg):
     '''
     Tauc-Lorentz oscillator model for dielectric constant based on
     parameters from ellipsometry measurements.
@@ -343,7 +411,7 @@ def eps_tauc_lorentz(A,C,E0,Eg,lam):
                  ((E**2 - E0**2)**2 + C**2*E**2)*(E > Eg)
     
     # get real and imaginary part of dielectric constant
-    E = convert_units(lam,'um','eV')                                # lambda range in eV
+    E = _convert_units(lam,'um','eV')                                # lambda range in eV
     a, b = Eg-20*C, Eg + 20*C                                            # set integration range
     eps_re = eps_real_kkr(lam,eps_TL,int_range=(a, b), cshift=1e-3) # get real part from KK
     eps_im = eps_TL(E)                                              # imaginary component
@@ -362,55 +430,10 @@ def eps_tauc_lorentz(A,C,E0,Eg,lam):
 
     # eps = 1 + A*E0*C/_np.pi*(F(b,d,d.conjugate())) + F(d,d.conjugate(),b) + F(d.conjugate(),b,d)
     #------------------------------------------------------------------------------
+    eps = eps_re + 1j*eps_im
+    return _np.sqrt(eps)
 
-    return eps_re + 1j*eps_im
-
-def eps_ellipsometry(oscilator_file, lam):
-    '''
-    Computes dielectric constant using ellipsometry fitting parameters.
-    
-    Parameters
-    ----------
-    oscilator_file   : csv file
-        File containing the ellisometry fitting parameters, sorted as:
-
-            type | A | E0 (eV) | C (eV) | Eg (eV) | Br (eV) | gamma (eV)
-        
-        where:
-            - type: oscillator model (Tauc-Lorentz, Gauss, Lorentz)
-            - A: Amplitude of oscillator
-            - E0: resonant energy (apply to all models)
-            - C: Tauc-Lorentz broadening (0 otherwise)
-            - Eg: Tauc-Lorentz Bandgap (0 otherwise)
-            - Br: Gauss model broadening (0 otherwise)
-            - gamma: Lorentz model decay (0 otherwise)
-    
-    lam  : ndarray or float
-        Wavelength range (um)
-
-    Returns
-    -------
-    eps : ndarray (complex)
-        Complex dielectric constant
-    '''
-    
-    ellip_data = _pd.read_csv(oscilator_file)
-    eps = complex(0,0)
-    for idx, oscillator in ellip_data.iterrows():
-        model, A, E0, C, Eg, Br, gamma = oscillator
-        if model == 'Tauc-Lorentz':
-            eps += eps_tauc_lorentz(A,C,E0,Eg,lam)
-            
-        if model == 'Gaussian':
-            eps += eps_gaussian(A,Br,E0,lam)
-            
-        elif model == 'Lorentz':
-            eps += eps_lorentz(A,gamma,E0,lam)
-    
-    return eps
-
-
-def lorentz(epsinf,wp,wn,gamma,lam):
+def lorentz(lam, epsinf,wp,wn,gamma):
     '''
     Refractive index from Lorentz model
 
@@ -437,8 +460,7 @@ def lorentz(epsinf,wp,wn,gamma,lam):
     
     return _np.sqrt(epsinf + wp**2/(wn**2 - w**2 - 1j*gamma*w))
 
-
-def drude(epsinf,wp,gamma,lam):
+def drude(lam, epsinf,wp,gamma):
     '''
     Refractive index from Drude model
 
@@ -466,6 +488,180 @@ def drude(epsinf,wp,gamma,lam):
     w = 2*_np.pi*3E14/lam*hbar/eV  # conver from um to eV 
     
     return _np.sqrt(epsinf - wp**2/(w**2 + 1j*gamma*w))
+
+def multi_oscillator(lam, oscilator_dict):
+    '''
+    Computes refractive index using a combination of oscillator models
+    
+    Parameters
+    ----------
+    lam  : ndarray or float
+        Wavelength range (um)
+
+    oscilator_dict   : dict
+        Dictionary containing model parameters. Sorted as:
+            {'lorentz': {'epsinf': value, 'wp': value, 'wn': value, 'gamma': value},
+            'drude'  : {'epsinf': value, 'wp': value, 'gamma': value},
+            'tauc-lorentz': {'A': value, 'C': value, 'E0': value, 'Eg': value},
+            'gaussian': {'A': value, 'Br': value, 'E0': value} }
+
+    Returns
+    -------
+    eps : ndarray (complex)
+        Complex dielectric constant
+    '''
+    # create a dictionary with models and function names
+    base_models = {
+        'tauc-lorentz': tauc_lorentz,
+        'gaussian': gaussian,
+        'lorentz': lorentz,
+        'drude': drude
+    }
+
+    eps = complex(0,0)
+    for name, params in oscilator_dict.items():
+
+        name = name.lower()
+        if name not in base_models:
+            print(f"Model '{name}' is not recognized. Skipping this model.")
+            continue
+
+        # Inspect model's signature to check required parameters
+        sig = _inspect.signature(base_models[name])
+        required_params = list(sig.parameters.keys())[1:]
+
+        # Throw error if any required parameter is missing
+        if set(params.keys()) != set(required_params):
+            raise ValueError(f"{name} model requires parameters: {required_params}")
+        
+        eps += base_models[name](lam, **params)**2
+    
+    return _np.sqrt(eps)
+
+def fit_to_oscillator(x, n_data, k_data, oscillator_dict, bounds=None, weights=None, x_units = 'um'):
+    """
+    Fit an oscillator parameters to tabulated refractive index data
+    parameters:
+    -----------
+    x : array_like
+        Independent variable array (e.g., wavelength in microns).
+    n_data : array_like
+        Real part of complex refractive index data to fit.
+    k_data : array_like
+        Imaginary part of complex refractive index data to fit.
+    oscillator_dict : dict
+        Dictionary containing oscillator model initial parameters. See `multi_oscillator` for format.
+    bounds : dict, optional
+        Bounds for oscillator parameters as (lower_bounds, upper_bounds).
+    weights : array_like or scalar, optional
+        Weights for fitting residuals. Can be a single scalar or a tuple of two arrays
+        for real and imaginary parts.
+    x_units : str, optional
+        Units of the input x array. If None, assumes x is in microns.
+    returns:
+    --------
+    DrudeParams
+        Fitted Drude parameters as a named tuple (eps_inf, omega_p, gamma).
+    res : OptimizeResult
+        The optimization result returned by scipy.optimize.least_squares.
+    """
+    # convert x units to microns
+    lam = _convert_units(x, x_units, to='um')
+    lam = _np.asarray(lam, float)
+        
+    # Create a single array with real and imaginary parts
+    y = _np.concatenate([_np.asarray(n_data, float), 
+                        _np.asarray(k_data, float)])
+    
+    # Declare dictionary with standard bounds for each model
+    bound_dict = {'drude':        {'epsinf': (0, 10), 'wp': (1E-2, 100), 'gamma': (1E-4, 10)},
+                  'lorentz':      {'epsinf': (0, 10), 'wp': (1E-2, 100), 'wn': (1E-2, 10), 'gamma': (1E-4, 10)},
+                  'tauc-lorentz': {'A': (0, 10), 'C': (0, 10), 'E0': (0, 10), 'Eg': (0, 10)},
+                  'gaussian':     {'A': (0, 10), 'Br': (0, 10), 'E0': (0, 10)}}
+    
+    # create a dictionary with models and function names
+    base_models = {
+        'tauc-lorentz': tauc_lorentz,
+        'gaussian': gaussian,
+        'lorentz': lorentz,
+        'drude': drude
+    }
+
+    if bounds is None:
+        bounds = bound_dict
+    elif not isinstance(bounds, dict):
+        raise TypeError("Bounds must be provided as a dictionary.")
+
+    # check that oscilator_dict has all required parameters and prepare initial values
+    p0 = []
+    lb , ub = [], []
+    for name, params in oscillator_dict.items():
+
+        name = name.lower()
+        if name not in base_models:
+            raise ValueError(f"Model '{name}' is not recognized.")
+
+        if name not in bounds:
+            raise ValueError(f"Bounds for model '{name}' are not recognized.")
+
+        # Inspect model's signature to check required parameters
+        sig = _inspect.signature(base_models[name])
+        required_params = list(sig.parameters.keys())[1:]
+
+        # Throw error if any required parameter is missing
+        if set(params.keys()) != set(required_params):
+            raise ValueError(f"{name} model requires parameters: {required_params}")
+   
+        model_bounds = bounds[name]
+        for param_name in required_params:
+            p0.append(params[param_name])          # append initial values
+            lb.append(model_bounds[param_name][0]) # append lower bounds
+            ub.append(model_bounds[param_name][1]) # append upper bounds
+
+    p0 = _np.asarray(p0, float)
+    p_bounds = (_np.asarray(lb), _np.asarray(ub))
+
+    if weights is None:
+        w = _np.ones_like(y)
+    else:
+        # weights can be (w_eps1, w_eps2) arrays, scalars, or a single scalar
+        if _np.isscalar(weights): # if weight is a single number
+            w = _np.ones_like(y) * float(weights)
+
+        elif isinstance(weights, tuple) and len(weights) == 2: # if weight is a tuple with two scalar
+            w1, w2 = weights
+            w = _np.concatenate([_np.ones_like(n_data) * float(w1), 
+                                _np.ones_like(k_data) * float(w2)])
+        else:                                                  # if weight is a tuple with two arrays
+            w1, w2 = weights
+            w = _np.concatenate([_np.asarray(w1, float), _np.asarray(w2, float)])
+
+    # ancillary function to construct oscillator dictionary from parameter array
+    def construct_oscillator_dict(p):
+        oscillator_iter = {}
+        for name in oscillator_dict.keys():
+            name = name.lower()
+            sig = _inspect.signature(base_models[name])
+            required_params = list(sig.parameters.keys())[1:]
+            n_params = len(required_params)
+            param_values = p[:n_params]
+            p = p[n_params:]  # update p to remove used parameters
+            oscillator_iter[name] = dict(zip(required_params, param_values))
+        return oscillator_iter
+
+    def resid(p):
+        # construct dictionary with current parameters
+        oscillator_iter = construct_oscillator_dict(p)
+
+        # compute refractive index with current parameters
+        n_complex = multi_oscillator(lam, oscillator_iter)
+        r = _np.concatenate([n_complex.real - n_data, 
+                            n_complex.imag - k_data])
+        return r * w
+
+    res = least_squares(resid, p0, bounds=p_bounds, method="trf")
+    oscillator_iter = construct_oscillator_dict(res.x)
+    return oscillator_iter, res
 
 def emt_multilayer_sphere(D: _List[float],
                           Np: _List[_Union[float, _np.ndarray]],
@@ -620,7 +816,7 @@ def eps_real_kkr(lam, eps_imag, eps_inf = 0, int_range = (0, _np.inf), cshift=1e
     '''
     lam, lam_isfloat = _ndarray_check(lam)
     cshift = complex(0, cshift)
-    w_i = convert_units(lam,'um', 'eV')
+    w_i = _convert_units(lam,'um', 'eV')
 
     if  isinstance(eps_imag, Callable):
         a, b = int_range # set integration range
@@ -707,10 +903,6 @@ GSTa = lambda lam: get_nkfile(lam, 'GSTa_Du2016', get_from_local_path = True)[0]
 # refractive index of crystaline GeSbTe (GST)
 GSTc = lambda lam: get_nkfile(lam, 'GSTc_Du2016', get_from_local_path = True)[0]
 
-# refractive index of crystaline GeSbTe (GST)
-GSTc = lambda lam: get_nkfile(lam, 'GSTc_Du2016', get_from_local_path = True)[0]
-
-
 # refractive index of Monoclinic(cold) Vanadium Dioxide (VO2M)
 # sputtered on SiO2 by default (film2)
 VO2M = lambda lam, film = 2: get_nkfile(lam, 'VO2M_Wan2019(film%i)' % film, get_from_local_path = True)[0]
@@ -760,7 +952,7 @@ def VO2(lam,T, film=2 , Tphc = 73, WT = 3.1):
     return _np.sqrt(eps)
 
 # refractive index of Silicon
-Si   = lambda lam: get_nkfile(lam, 'si_Schinke2017', get_from_local_path = True)[0]
+Si   = lambda lam: get_ri_info(lam, 'main', 'Si', 'Franta-300K')[0]
 
 #------------------------------------------------------------------------------
 #                                   Metals

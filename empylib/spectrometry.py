@@ -743,59 +743,62 @@ def sample_uvvis(sample: str = None,
 
     return out
 
-def linestyle(sample: pd.DataFrame,
-                linestyles: Dict = {"tot": "-", "spec": ":", "dif": "--"},
-                colors: Dict = {"R": "r", "T": "b", "A": "k"}) -> str:
-    """
-    Generate matplotlib line styles for UV-Vis DataFrame columns.
-    E.g. {"Rtot": "-r", "Tspec": ":b", "Rdif": "--r"}.
+# def rt_style_mapper(sample: pd.DataFrame,
+#                 linestyles: Dict = {"tot": "-", "spec": ":", "dif": "--"},
+#                 colors: Dict = {"R": "r", "T": "b", "A": "k"}) -> str:
+#     """
+#     Generate matplotlib line styles for UV-Vis DataFrame columns.
+#     E.g. {"Rtot": "-r", "Tspec": ":b", "Rdif": "--r"}.
     
-    Parameters
-    ----------
-    sample : pandas.DataFrame
-        DataFrame with columns named like Rtot, Tspec, Rdif, Atot, etc.
+#     Parameters
+#     ----------
+#     sample : pandas.DataFrame
+#         DataFrame with columns named like Rtot, Tspec, Rdif, Atot, etc.
     
-    linestyles : Dict, optional
-        Mapping of line type keywords to matplotlib line styles.
-        Defaults to {"tot": "-", "spec": ":", "dif": "--"}.
+#     linestyles : Dict, optional
+#         Mapping of line type keywords to matplotlib line styles.
+#         Defaults to {"tot": "-", "spec": ":", "dif": "--"}.
     
-    colors : Dict, optional
-        Mapping of measurement type keywords to colors.
-        Defaults to {"R": "r", "T": "b", "A": "k"}.
+#     colors : Dict, optional
+#         Mapping of measurement type keywords to colors.
+#         Defaults to {"R": "r", "T": "b", "A": "k"}.
     
-    Returns
-    -------
-    Dict[str, str]
-        Dictionary mapping each column name to a matplotlib style string.
-        E.g. {"Rtot": "-r", "Tspec": ":b", "Rdif": "--r"}
+#     Returns
+#     -------
+#     Dict[str, str]
+#         Dictionary mapping each column name to a matplotlib style string.
+#         E.g. {"Rtot": "-r", "Tspec": ":b", "Rdif": "--r"}
     
-    Notes
-    -----
-    - The function looks for keywords in column names to determine line style
-      and color. It is case-insensitive.
+#     Notes
+#     -----
+#     - The function looks for keywords in column names to determine line style
+#       and color. It is case-insensitive.
     
-    - If a column name does not match any known keywords, it defaults to
-      a solid black line ("-k").
-    """
+#     - If a column name does not match any known keywords, it defaults to
+#       a solid black line ("-k").
+#     """
     
-    style = {}
-    # Case-insensitive matching
-    for col_name in sample.columns:
-        color = colors.get(col_name[0], "k")  # default black if not R/T
+#     style = {}
+#     label = {}
+#     # Case-insensitive matching
+#     for col_name in sample.columns:
+#         color = colors.get(col_name[0], "k")  # default black if not R/T
         
-        found = False
-        for key, ls in linestyles.items():
-            # match line style keywords at end of column name
-            if col_name.lower().endswith(key):
-                style[col_name] = ls + color
-                found = True
-                break
+#         found = False
+#         for key, ls in linestyles.items():
+#             # match line style keywords at end of column name
+#             if col_name.lower().endswith(key):
+#                 style[col_name] = ls + color
+#                 label[col_name] = f"${col_name[0]}_\mathrm{{{key}}}$"
+#                 found = True
+#                 break
 
-        # Fallback solid line if no style keyword matched
-        if not found:
-            style[col_name] = "-" + color
+#         # Fallback solid line if no style keyword matched
+#         if not found:
+#             style[col_name] = "-" + color
+#             label[col_name] = col_name
             
-    return style
+#     return style, label
 
 def _correct_reflectance(out: pd.DataFrame, ref_standard: str) -> None:
     # Path relative to the empylib package

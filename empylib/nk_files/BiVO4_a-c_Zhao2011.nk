@@ -1,6 +1,6 @@
-# Refractive index of bismuth vanadate (BiVO4) extracted from Malerba et al “Absor
-# ption Coefficient of Bulk and Thin Film Cu2O.” Solar Energy Materials and Solar 
-# Cells 95, no. 10 (2011): 2848–54.
+# Refractive index of bismuth vanadate (BiVO4) a-c facets. 
+# Extracted from Zhao et al “Electronic Structure and Optical Properties of Monoclinic Clinobisvanite BiVO4.” 
+# Physical Chemistry Chemical Physics 13, no. 10 (2011): 4746. https://doi.org/10.1039/c0cp01871f.
 #
 # First column:		Wavelength (in um)
 # Second column:	refractive index

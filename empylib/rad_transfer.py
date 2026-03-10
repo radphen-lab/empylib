@@ -18,7 +18,7 @@ from . import waveoptics as wv
 from . import nklib as nk
 import iadpython as _iad
 import pandas as pd
-from typing import Union as _Union, Optional as _Optional, List as _List
+from typing import Union as _Union, Optional as _Optional, List as _List, Tuple as _Tuple
 from .utils import _as_carray, _check_mie_inputs, _hide_signature
 from .nklib import emt_brugg, emt_multilayer_sphere
 from inspect import Signature
@@ -46,8 +46,7 @@ def T_beer_lambert(lam: _Union[float, _np.ndarray],                             
     incoherent light incident on a slab between two semi-infinite media 
     (no scattering is considered for this parameter)
 
- Parameters
-    ----------
+    Parameters
     lam : array-like, shape (nλ,)
         Wavelengths [µm], strictly positive.
 
@@ -103,19 +102,13 @@ def T_beer_lambert(lam: _Union[float, _np.ndarray],                             
     
     check_inputs : bool, optional
         Whether to check mie inputs (default: True)    
+
     Returns
-    -------
-    Ttot : array-like, shape (nλ,)
-        Total transmittance.
-    
-    Rtot : array-like, shape (nλ,)
-        Total reflectance.
-    
-    Tspec : array-like, shape (nλ,)
-        Specular transmittance.
-    
-    Rspec : array-like, shape (nλ,)
-        Specular reflectance.
+    - results_df : pd.DataFrame with index=lam and columns:
+                'Rtot' : total reflectance
+                'Ttot' : total transmittance
+                'Tspec': specular (unscattered) transmittance
+                'Tdif': diffuse (scattered) transmittance
     '''
 
     # ---------- coerce arrays & basic checks ----------
@@ -178,8 +171,8 @@ def T_beer_lambert(lam: _Union[float, _np.ndarray],                             
     # ---------- Fresnel reflectance/transmittance ----------
     tfilm = tfilm*1E3 # convert mm to micron units
     
-    Rp, Tp = wv.incoh_multilayer(lam, theta, (Nup, Nh, Ndw), tfilm, pol = 'TM')
-    Rs, Ts = wv.incoh_multilayer(lam, theta, (Nup, Nh, Ndw), tfilm, pol = 'TE')
+    Rp, Tp = wv.incoh_multilayer(lam, theta, [Nup, Nh, Ndw], tfilm, polarization='TM')
+    Rs, Ts = wv.incoh_multilayer(lam, theta, [Nup, Nh, Ndw], tfilm, polarization='TE')
     T    = (Ts + Tp)/2
     Rtot = (Rp + Rs)/2
     
@@ -187,8 +180,19 @@ def T_beer_lambert(lam: _Union[float, _np.ndarray],                             
         
     Ttot = T*_np.exp(-k_abs*tfilm/_np.cos(theta1.real))
     Tspec = T*_np.exp(-k_ext*tfilm/_np.cos(theta1.real))
+    Tdif = Ttot - Tspec
 
-    return Ttot, Rtot, Tspec
+    # store data into a dataframe (λ index)
+    results_df = pd.DataFrame({
+        'Rtot': Rtot,
+        'Ttot': Ttot,
+        'Tspec': Tspec,
+        'Tdif': Tdif
+    }, index=lam)
+
+    results_df.index.name = 'Wavelength (µm)'
+
+    return results_df
 
 @_hide_signature
 def adm_sphere(lam: _Union[float, _np.ndarray],                                     # wavelengths [µm]
@@ -204,11 +208,11 @@ def adm_sphere(lam: _Union[float, _np.ndarray],                                 
                 dependent_scatt = False,                                            # use Perkus-Yevik for dependent scattering
                 effective_medium: bool = False,                                     # whether to compute effective Nh via Bruggeman
                 use_phase_fun: bool = False,                                        # whether to use phase function instead of g
-                check_inputs = True                                                 # whether to check mie inputs
+                cone_incidence: _Optional[_Tuple[float, float]] = None,             # (theta_min, theta_max) in degrees for diffuse cone incidence
+                lambertian: bool = False                                            # whether to compute Lambertian incidence instead of normal
                 ):
     '''
     Parameters
-    ----------
     lam : array-like, shape (nλ,)
         Wavelengths [µm], strictly positive.
 
@@ -257,26 +261,28 @@ def adm_sphere(lam: _Union[float, _np.ndarray],                                 
         Whether to use the full phase function in the radiative transfer (default: False).
         If False, the asymmetry parameter g is used instead (Henyey-Greenstein approximation).
         Using the phase function is more accurate but also more computationally intensive.
+
+    cone_incidence : tuple, optional
+        Optional tuple (theta_min, theta_max) in degrees for diffuse cone incidence    
     
-    check_inputs : bool, optional
-        Whether to check mie inputs (default: True)    
+    lambertian : bool, optional
+        Whether to compute Lambertian incidence instead of normal incidence
+
     Returns
-    -------
-    Ttot : array-like, shape (nλ,)
-        Total transmittance.
-    
-    Rtot : array-like, shape (nλ,)
-        Total reflectance.
-    
-    Tspec : array-like, shape (nλ,)
-        Specular transmittance.
-    
-    Rspec : array-like, shape (nλ,)
-        Specular reflectance.
+    - results_df : pd.DataFrame with index=lam and columns:
+                'Rtot' : total reflectance
+                'Ttot' : total transmittance
+                'Rspec': specular (unscattered) reflectance
+                'Tspec': specular (unscattered) transmittance
+                'Rdif' : diffuse reflectance
+                'Tdif' : diffuse transmittance
+                'Rcone': reflectance for cone diffuse incidence (if requested)
+                'Tcone': transmittance for cone diffuse incidence (if requested)
+                'Rlam' : reflectance for Lambertian incidence (if requested)
+                'Tlam' : transmittance for Lambertian incidence (if requested)
     '''
     # ---------- coerce arrays & basic checks ----------
-    if check_inputs:
-        lam, Nh, Np, D, size_dist = _check_mie_inputs(lam, Nh, Np, D, size_dist=size_dist)
+    lam, Nh, Np, D, size_dist = _check_mie_inputs(lam, Nh, Np, D, size_dist=size_dist)
 
     nlam = lam.size
     Nup = _as_carray(Nup, "Nup", nlam, val_type=complex)
@@ -335,26 +341,32 @@ def adm_sphere(lam: _Union[float, _np.ndarray],                                 
 
     # ---------- radiative transfer ----------
     if use_phase_fun:
-        Ttot, Rtot, Tspec, Rspec = adm(lam, tfilm, k_sca, k_abs, Nh, 
+        df_results = adm(lam, tfilm, k_sca, k_abs, Nh=Nh_eff, 
                                        phase_fun=phase_scatter, 
                                        Nup=Nup, 
-                                       Ndw=Ndw)
+                                       Ndw=Ndw,
+                                       cone_incidence=cone_incidence,
+                                       lambertian=lambertian)
     else:
-        Ttot, Rtot, Tspec, Rspec = adm(lam, tfilm, k_sca, k_abs, Nh, 
+        df_results = adm(lam, tfilm, k_sca, k_abs, Nh=Nh_eff, 
                                        gcos=gcos, 
                                        Nup=Nup, 
-                                       Ndw=Ndw)
+                                       Ndw=Ndw,
+                                       cone_incidence=cone_incidence,
+                                       lambertian=lambertian)
 
-    return Ttot, Rtot, Tspec, Rspec
+    return df_results
 
 @_hide_signature
 def adm(lam, tfilm, k_sca, k_abs, Nh,
-        gcos=None,            # optional: asymmetry parameter per λ
+        gcos=None,                                              # optional: asymmetry parameter per λ
         *,
-        phase_fun=None,       # optional: phase function vs θ (DataFrame only; θ index in degrees 0..180)
-        Nup=1.0,              # refractive index above
-        Ndw=1.0,              # refractive index below
-        quad_pts: int = 16,   # IAD quadrature points when using a tabulated PF
+        phase_fun=None,                                         # optional: phase function vs θ (DataFrame only; θ index in degrees 0..180)
+        Nup=1.0,                                                # refractive index above
+        Ndw=1.0,                                                # refractive index below
+        quad_pts: int = 16,                                     # IAD quadrature points when using a tabulated PF
+        cone_incidence: _Optional[_Tuple[float, float]] = None, # (theta_min, theta_max) in degrees for diffuse cone incidence
+        lambertian: bool = False                                # whether to compute Lambertian incidence instead of normal
 ):
     """
     Adding–doubling (IAD) reflectance/transmittance for a scattering/absorbing film.
@@ -376,9 +388,21 @@ def adm(lam, tfilm, k_sca, k_abs, Nh,
     --------------------------------------------------------------------------
     - Nup, Ndw : scalar or (nλ,) complex refractive indices above/below (defaults=1.0)
     - quad_pts : quadrature points for IAD when using a tabulated phase function
+    - cone_incidence : optional tuple (theta_min, theta_max) in degrees for
+                       diffuse cone incidence calculations
 
     Returns:
-    - Ttot, Rtot, Tspec, Rspec : each (nλ,) arrays
+    - results_df : pd.DataFrame with index=lam and columns:
+                'Rtot' : total reflectance
+                'Ttot' : total transmittance
+                'Rspec': specular (unscattered) reflectance
+                'Tspec': specular (unscattered) transmittance
+                'Rdif' : diffuse reflectance
+                'Tdif' : diffuse transmittance
+                'Rcone': reflectance for cone diffuse incidence (if requested)
+                'Tcone': transmittance for cone diffuse incidence (if requested)
+                'Rlam' : reflectance for Lambertian incidence (if requested)
+                'Tlam' : transmittance for Lambertian incidence (if requested)
     """
     # ---------- coerce arrays ----------
     lam   = _np.atleast_1d(_np.asarray(lam,   float))
@@ -460,6 +484,14 @@ def adm(lam, tfilm, k_sca, k_abs, Nh,
     Tspec = _np.zeros(nlam, float)
     Rspec = _np.zeros(nlam, float)
 
+    if cone_incidence is not None:
+        Tcone = _np.zeros(nlam, float)
+        Rcone = _np.zeros(nlam, float)
+
+    if lambertian:
+        Rlam = _np.zeros(nlam, float)
+        Tlam = _np.zeros(nlam, float)
+
     for j in range(nlam):
         # guard: IAD wants n >= 1
         n_real = float(max(Nh_arr.real[j], 1.0))
@@ -482,14 +514,57 @@ def adm(lam, tfilm, k_sca, k_abs, Nh,
                                 quad_pts=int(quad_pts),
                                 pf_type="TABULATED", pf_data=pf_col)
 
-        # normal-incidence total RT
-        R_tot, T_tot, _, _ = s.rt()
-        # unscattered (specular) RT
+        # total RT at normal and Lambertian (diffuse) incidence
+        R, _, T, _ = s.rt_matrices()
+        R_tot, T_tot, R_lam, T_lam = s.UX1_and_UXU(R, T)
+        
+        # specular RT (at normal incidence)
         R_spec, T_spec = s.unscattered_rt()
 
         Ttot[j]  = float(T_tot)
         Rtot[j]  = float(R_tot)
         Tspec[j] = float(T_spec)
         Rspec[j] = float(R_spec)
+        if lambertian:
+            Rlam[j] = float(R_lam)
+            Tlam[j] = float(T_lam)
 
-    return Ttot, Rtot, Tspec, Rspec
+        # RT components for cone diffuse incidence (if requested)
+        if cone_incidence is not None:
+            # extract cone incident angles
+            theta_min, theta_max = cone_incidence
+
+            # get equivalent nu = cos(theta)
+            nu_min = _np.cos(_np.radians(theta_max))  
+            nu_max = _np.cos(_np.radians(theta_min))
+
+            # compute diffuse cone incidence
+            R_cone, T_cone = s.rt_diffuse_cone(R, T, nu_min, nu_max)
+            Rcone[j] = float(R_cone)
+            Tcone[j] = float(T_cone)
+
+    # Compute diffuse components of R and T
+    Rdif = Rtot - Rspec
+    Tdif = Ttot - Tspec
+
+    # Store data into a dataframe (λ index)
+    results_df = pd.DataFrame({
+        "Rtot": Rtot,
+        "Ttot": Ttot,
+        "Rspec": Rspec,
+        "Tspec": Tspec,
+        "Rdif": Rdif,
+        "Tdif": Tdif
+    }, index=lam)
+
+    results_df.index.name = 'Wavelength (µm)'
+
+    if cone_incidence is not None:
+        results_df["Rcone"] = Rcone
+        results_df["Tcone"] = Tcone
+    
+    if lambertian:
+        results_df["Rlam"] = Rlam
+        results_df["Tlam"] = Tlam
+
+    return results_df

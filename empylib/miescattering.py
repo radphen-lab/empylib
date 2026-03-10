@@ -1218,12 +1218,12 @@ def cross_section_ensemble(
     Nh : float or array-like (nλ,)
         Host refractive index (can be complex). If array-like, length must equal len(lam).
 
-    Np (float, 1darray or list): Complex refractive index of each 
-                                            shell layer. Np.shape[1] == len(D). 
+    Np : float, 1darray or list 
+        Complex refractive index of each shell layer. Np.shape[1] == len(D). 
         Options are:
-        float:   solid sphere and constant refractive index
-        1darray: solid sphere and spectral refractive index (len = lam)
-        list:    multilayered sphere (with both constant or spectral refractive indexes)
+        - float:   solid sphere and constant refractive index
+        - 1darray: solid sphere and spectral refractive index (len = lam)
+        - list:    multilayered sphere (with both constant or spectral refractive indexes)
     
     D : float, _np.ndarray or list
         Diameter of the spheres. Use float for monodisperse, or array for polydisperse.
@@ -1290,7 +1290,6 @@ def cross_section_ensemble(
         D_layers_mean = []
         for i in range(N_layers):
             if size_dist is None:
-                # Monodisperse
                 D_layers_mean.append(D[i])  # -> float
             else:
                 # Polydisperse
@@ -1344,6 +1343,9 @@ def cross_section_ensemble(
     # Convert Q_sca (efficiency) to cross section via weighted area ⟨A⟩ = Σ p_i A_i
     A_mean = float(_np.sum(p * Ac))
     csca_av = qsca_av * A_mean
+
+    if not phase_function:
+        return cabs_av, csca_av, gcos_av, None
 
     return cabs_av, csca_av, gcos_av, phase_fun_df
 

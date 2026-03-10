@@ -2,7 +2,8 @@ import numpy as _np
 from typing import Union as _Union, Optional as _Optional
 from inspect import Signature as _Signature
 from scipy.interpolate import CubicSpline as _CubicSpline
-from typing import Tuple as _Tuple
+from typing import Tuple as _Tuple, Dict as _Dict
+import pandas as _pd
 
 # standard constants
 e_charge = 1.602176634E-19      # C (elementary charge)
@@ -275,18 +276,23 @@ def _check_mie_inputs(lam=None, N_host=None, Np_shells=None, D=None, *, size_dis
             if not _np.all(_np.isfinite(arr)) or _np.any(arr <= 0):
                 raise ValueError("All diameters in D must be finite and > 0 (µm).")
             return arr
-
+        
+        # single-layer monodisperse
         if _np.isscalar(D) or (isinstance(D, _np.ndarray) and _np.asarray(D).ndim == 0):
-            # single-layer monodisperse
             D_out = [_np.array([float(D)], dtype=float)]
 
+        # multilayer sphere
         elif isinstance(D, (list, tuple)):
             if len(D) == 0:
                 raise ValueError("D cannot be an empty list.")
+            
             D_list = []
             for d in D:
+                # monodisperse layer (scalar)
                 if _np.isscalar(d) or (isinstance(d, _np.ndarray) and _np.asarray(d).ndim == 0):
                     D_list.append(_np.array([float(d)], dtype=float))
+                
+                # polydisperse layer (1D array)
                 else:
                     arr = _as_1d_array_positive(d)
                     D_list.append(arr)
@@ -295,18 +301,22 @@ def _check_mie_inputs(lam=None, N_host=None, Np_shells=None, D=None, *, size_dis
             if _np.any(lengths > 1):
                 # polydisperse multilayer
                 n_bins = int(lengths.max())
+                
                 if not _np.all(lengths == n_bins):
                     raise ValueError("For multilayer polydisperse, all layer arrays in D must have the same length.")
                 D_stack = _np.vstack(D_list)
+                
                 if _np.any(_np.diff(D_stack, axis=0) <= 0):
                     raise ValueError("For multilayer polydisperse, diameters must be element-wise strictly increasing across layers.")
             else:
                 # multilayer monodisperse: strictly increasing floats
                 mono_vals = _np.array([a.item() for a in D_list], dtype=float)
+                
                 if _np.any(~_np.isfinite(mono_vals)) or _np.any(mono_vals <= 0):
                     raise ValueError("All diameters in D must be finite and > 0 (µm).")
-                if _np.any(_np.diff(mono_vals) <= 0):
-                    raise ValueError("For multilayer monodisperse, D must be strictly increasing (inner < ... < outer).")
+                
+                if _np.any(_np.diff(mono_vals) < 0):
+                    raise ValueError("For multilayer monodisperse, D must be strictly increasing (inner <= ... <= outer).")
 
             D_out = D_list
 
@@ -333,8 +343,8 @@ def _check_mie_inputs(lam=None, N_host=None, Np_shells=None, D=None, *, size_dis
                 return _np.full(nlam, complex(xa), dtype=complex)
             arr = _np.asarray(xa, dtype=complex).ravel()
             if lam_out is None:
-                raise ValueError("Spectral Np_shells provided but lam is None. Provide lam.")
-            if arr.size != nlam:
+                print('No lam provided, but spectral Np_shells given. Ignoring spectral shape.')
+            elif arr.size != nlam:
                 raise ValueError(f"A spectral layer has length {arr.size}, expected len(lam)={nlam}.")
             return arr
 
@@ -394,9 +404,9 @@ def _check_mie_inputs(lam=None, N_host=None, Np_shells=None, D=None, *, size_dis
         is_mono = all(a.size == 1 for a in D_out)
         if size_dist is None:
             if not is_mono:
-                raise ValueError(
+                print(
                     "size_dist is None but D is polydisperse. "
-                    "Provide size_dist with length equal to the number of size bins."
+                    "Skipping size distribution check."
                 )
             size_dist_out = None
         else:
@@ -489,6 +499,63 @@ def _warn_extrapolation(lam_arr, lo, hi, label="", quantity=""):
                 f"Extrapolating {label} {quantity} above tabulated range "
                 f"(requested max {lam_max:.3f} µm; data ends {hi:.3f} µm)",
             )
+
+def rt_style_mapper(sample: _pd.DataFrame,
+                linestyles: _Dict = {"tot": "-", "spec": ":", "dif": "--"},
+                colors: _Dict = {"R": "r", "T": "b", "A": "k"}) -> str:
+    """
+    Generate matplotlib linestyles and legend labels for RT DataFrame results.
+    E.g. {"Rtot": "-r", "Tspec": ":b", "Rdif": "--r"}.
+    
+    Parameters
+    ----------
+    sample : pandas.DataFrame
+        DataFrame with columns named like Rtot, Tspec, Rdif, Atot, etc.
+    
+    linestyles : Dict, optional
+        Mapping of line type keywords to matplotlib line styles.
+        Defaults to {"tot": "-", "spec": ":", "dif": "--"}.
+    
+    colors : Dict, optional
+        Mapping of measurement type keywords to colors.
+        Defaults to {"R": "r", "T": "b", "A": "k"}.
+    
+    Returns
+    -------
+    Dict[str, str]
+        Dictionary mapping each column name to a matplotlib style string.
+        E.g. {"Rtot": "-r", "Tspec": ":b", "Rdif": "--r"}
+    
+    Notes
+    -----
+    - The function looks for keywords in column names to determine line style
+      and color. It is case-insensitive.
+    
+    - If a column name does not match any known keywords, it defaults to
+      a solid black line ("-k").
+    """
+    
+    style = {}
+    label = {}
+    # Case-insensitive matching
+    for col_name in sample.columns:
+        color = colors.get(col_name[0], "k")  # default black if not R/T
+        rt_type = col_name[0]  # first letter indicates R, T, or A
+        
+        found = False
+        for key, ls in linestyles.items():
+            # match line style keywords at end of column name
+            if col_name.lower().endswith(key):
+                style[col_name] = ls + color
+                label[col_name] = f"${rt_type}_\mathrm{{{key}}}$"
+                found = True
+                break
+
+        # Fallback solid line if no style keyword matched
+        if not found:
+            style[col_name] = "-" + color
+            
+    return style, label
 
 def detect_spectral_spikes(
     x: _np.ndarray,

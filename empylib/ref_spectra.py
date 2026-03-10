@@ -442,6 +442,8 @@ def plot_spectra(
         lam_background_samples: int = 2000,
         scale_atm_to_right_axis: bool = True,
         # Axes / styling
+        ax: _Optional[_Any] = None, # axis to plot on (if None, create new figure)
+        ax_twinx: _Optional[_Any] = None, # axis to twin plot (if None, create new y twin axis)
         xscale: str = 'log',              # 'log' or 'linear'
         xticks: _Optional[_Sequence[float]] = (0.3, 0.4, 0.75, 1.4, 3, 8, 15, 30, 50, 100),
         xlim: _Optional[_Tuple[float, float]] = None,
@@ -496,7 +498,8 @@ def plot_spectra(
 
     # Default legend kwargs (compact)
     if curves_legend_kwargs is None:
-        curves_legend_kwargs = dict(handlelength=1.8, handletextpad=0.6, borderaxespad=0.5, labelspacing=0.5)
+        curves_legend_kwargs = dict(handlelength=1.8, handletextpad=0.6, 
+                                    borderaxespad=0.5, labelspacing=0.5)
     else:
         curves_legend_kwargs.setdefault('handlelength', 1.8)
         curves_legend_kwargs.setdefault('handletextpad', 0.6)
@@ -528,8 +531,28 @@ def plot_spectra(
               if xscale == 'log'
               else _np.linspace(lam_min, lam_max, lam_background_samples))
 
-    fig, ax = _plt.subplots(figsize=figsize)
-    ax2 = ax.twinx()
+    # --- Figure and axis setup ---
+    # If no axis provided, create a new figure/axes.  Otherwise reuse the supplied
+    # axis and get its figure.  For external axes we do not override the figure size.
+    created_fig = False
+    if ax is None:
+        fig, ax = _plt.subplots(figsize=figsize)
+        created_fig = True
+    else:
+        if not isinstance(ax, _plt.Axes):
+            raise ValueError("`ax` must be a matplotlib Axes instance or None.")
+        fig = ax.figure
+        ax.patch.set_alpha(0.0) # transparent primary axis background 
+
+    # Create a twin axis for the backgrounds.  Lower its z-order and hide its patch
+    # so that the filled backgrounds appear behind the user’s curves:contentReference[oaicite:2]{index=2}.
+    if ax_twinx is None:
+        ax2 = ax.twinx()
+    else:
+        if not isinstance(ax_twinx, _plt.Axes):
+            raise ValueError("`ax_twinx` must be a matplotlib Axes instance or None.")
+        ax2 = ax_twinx
+    ax2.patch.set_alpha(0.0)
 
     curve_handles: _List[_Any] = []
     background_handles: _List[_Any] = []
@@ -655,7 +678,9 @@ def plot_spectra(
                       loc=curves_legend_loc,
                       **curves_legend_kwargs)
 
-    if tight_layout:
+    # Only apply tight_layout when we created a new figure to avoid disturbing an
+    # externally managed figure layout:contentReference[oaicite:3]{index=3}.
+    if tight_layout and created_fig:
         fig.tight_layout()
 
     return fig, ax
