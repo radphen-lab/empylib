@@ -1,0 +1,3 @@
+implement a Tsol and Tlum functions (average solar, lum and thermal for any kind of input)
+implement library to read uv-vis data
+implement dataframe output for all functions (easier to manage)

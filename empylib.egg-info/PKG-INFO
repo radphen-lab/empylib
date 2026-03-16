@@ -1,0 +1,19 @@
+Metadata-Version: 2.1
+Name: empylib
+Version: 0.0.2
+Summary: A python library for computational electromagnetics
+Home-page: https://github.com/PanxoPanza/empylib
+Author: Francisco V. Ramirez-Cuevas
+Keywords: electromagnetism
+License-File: LICENCE.txt
+Requires-Dist: numpy>=1.15.0
+Requires-Dist: pandas>=0.24.0
+Requires-Dist: scipy>=1.1.0
+Requires-Dist: pyyaml>=5.1
+Requires-Dist: requests>=2.18.0
+Requires-Dist: typing-extensions>=4.0
+Requires-Dist: colour-science>=0.4.6
+Requires-Dist: iadpython@ git+https://github.com/PanxoPanza/iadpython.git
+
+# empylib
+Standard python library for computational electromagnetics

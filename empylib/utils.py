@@ -19,6 +19,105 @@ def _as_carray(x, name, nlam, val_type = complex):
             raise ValueError(f"{name} must be scalar or have shape (len(lam),).")
         return arr.astype(val_type)
 
+def _as_1d_array(x, name, dtype=None):
+    """Convert a scalar or 1D sequence to a 1D ndarray."""
+    arr = _np.asarray(x, dtype=dtype)
+    if arr.ndim == 0:
+        arr = arr.reshape(1)
+    if arr.ndim != 1:
+        raise ValueError(f"{name} must be a scalar or a 1D array.")
+    return arr
+
+def _as_real_array(x, name, *, positive=False, nonnegative=False):
+    """Validate a real scalar/1D sequence and return it as a 1D float array."""
+    raw = _np.asarray(x)
+    if raw.dtype == _np.bool_:
+        raise TypeError(f"{name} must contain real numeric values, not booleans.")
+    if _np.iscomplexobj(raw):
+        raise TypeError(f"{name} must contain real values.")
+
+    arr = _as_1d_array(x, name, dtype=float)
+    if arr.size == 0:
+        raise ValueError(f"{name} must be non-empty.")
+    if not _np.all(_np.isfinite(arr)):
+        raise ValueError(f"{name} must contain only finite values.")
+    if positive and _np.any(arr <= 0):
+        raise ValueError(f"{name} must contain only positive values.")
+    if nonnegative and _np.any(arr < 0):
+        raise ValueError(f"{name} must contain only nonnegative values.")
+    return arr
+
+def _as_float_list(x, name, *, nonnegative=False):
+    """Convert a scalar or 1D real array-like to a Python list of floats."""
+    if x is None:
+        return []
+    return [float(v) for v in _as_real_array(x, name, nonnegative=nonnegative)]
+
+def _normalize_multilayer_inputs(lam, thickness, N_layers, *, N_above=1.0, N_below=1.0):
+    """
+    Normalize multilayer wave-optics inputs to the same scalar-or-spectrum style
+    used elsewhere in the package.
+
+    Returns
+    -------
+    lam : ndarray
+        1D wavelength array [um].
+    thicknesses : list[float]
+        One thickness per finite layer [um].
+    N_layers : list[ndarray]
+        One complex spectral refractive-index array per finite layer.
+    N_above_arr : ndarray
+        Upper semi-infinite medium refractive index with shape (len(lam),).
+    N_below_arr : ndarray
+        Lower semi-infinite medium refractive index with shape (len(lam),).
+    """
+    lam_arr = _as_real_array(lam, "lam", positive=True)
+    if thickness is None:
+        dL = []
+    else:
+        thickness_arr = _np.asarray(thickness)
+        if thickness_arr.ndim == 1 and thickness_arr.size == 0:
+            dL = []
+        else:
+            dL = _as_float_list(thickness, "thickness", nonnegative=True)
+    nlam = lam_arr.size
+
+    if N_layers is None:
+        layer_inputs = []
+    elif _np.isscalar(N_layers):
+        layer_inputs = [N_layers]
+    else:
+        arr = _np.asarray(N_layers)
+        if arr.ndim == 0:
+            layer_inputs = [N_layers]
+        elif isinstance(N_layers, _np.ndarray):
+            if arr.ndim == 1:
+                layer_inputs = [N_layers]
+            elif arr.ndim == 2:
+                layer_inputs = [row for row in arr]
+            else:
+                raise TypeError(
+                    "N_layers must be a scalar, a 1D spectral array, a 2D layer-by-wavelength array, or a list."
+                )
+        elif isinstance(N_layers, (list, tuple)):
+            layer_inputs = list(N_layers)
+        else:
+            raise TypeError(
+                "N_layers must be a scalar, a spectral array, or a list/tuple with one element per layer."
+            )
+
+    if len(layer_inputs) != len(dL):
+        raise ValueError("len(N_layers) must be equal to len(thickness).")
+
+    nL = [
+        _as_carray(layer_ni, f"N_layers[{i}]", nlam, val_type=complex)
+        for i, layer_ni in enumerate(layer_inputs)
+    ]
+    n0 = _as_carray(N_above, "N_above", nlam, val_type=complex)
+    nS = _as_carray(N_below, "N_below", nlam, val_type=complex)
+
+    return lam_arr, dL, nL, n0, nS
+
 def _ndarray_check(x):
     '''
     check if x is not ndarray. If so, convert x to a 1d ndarray
@@ -223,17 +322,19 @@ def _check_mie_inputs(lam=None, N_host=None, Np_shells=None, D=None, *, size_dis
           - list/tuple of scalars/1D arrays (one per layer; arrays must match len(lam))
           - 2D ndarray shaped (n_layers, nλ)
         If arrays are provided but lam is None, error.
-    D : float, 1D array-like of float, or list of those, optional
+    D : float, array-like, or list of those, optional
         Outer diameter(s) per layer (µm). Semantics:
           - float: single-layer, monodisperse
-          - 1D array: single-layer, polydisperse (size distribution)
+          - 1D array: single-layer, polydisperse (size distribution), or
+            multilayer monodisperse when `Np_shells` clearly defines >1 layer
           - list of floats: multilayer, monodisperse
           - list of 1D arrays: multilayer, polydisperse (all arrays must be same length)
+          - 2D array: multilayer, polydisperse with shape (n_layers, n_bins)
         For multilayer monodisperse (list of floats): strictly increasing.
         For multilayer polydisperse (list of arrays): element-wise strictly increasing across layers.
     size_dist : None or 1D array-like of float, optional (default None)
-        Size-distribution weights. **If None, the distribution must be monodisperse** (i.e., all layers
-        length==1). For polydisperse D, you must provide size_dist with matching length; it will be normalized.
+        Size-distribution weights. If omitted for polydisperse `D`, a uniform
+        number distribution is assumed and normalized automatically.
 
     Returns
     -------
@@ -249,7 +350,7 @@ def _check_mie_inputs(lam=None, N_host=None, Np_shells=None, D=None, *, size_dis
     Notes
     -----
     - If both D and Np_shells are provided, their number of layers must match.
-    - If size_dist is None, inputs must be monodisperse (no arrays of length > 1 in D).
+    - For polydisperse `D`, omitted `size_dist` defaults to uniform weights.
     """
     # ---- lam ----
     if lam is None:
@@ -264,22 +365,77 @@ def _check_mie_inputs(lam=None, N_host=None, Np_shells=None, D=None, *, size_dis
 
     nlam = None if lam_out is None else lam_out.size
 
+    def _infer_layer_count(x):
+        if x is None:
+            return None
+        if isinstance(x, (list, tuple)):
+            return len(x)
+        arr = _np.asarray(x)
+        if arr.ndim == 2:
+            return int(arr.shape[0])
+        return 1
+
+    n_layers_hint = _infer_layer_count(Np_shells)
+
     # ---- D (diameters) → list[ndarray]
     D_out = None
     n_bins = None  # number of size bins if polydisperse
 
     if D is not None:
         def _as_1d_array_positive(x):
-            arr = _np.asarray(x, dtype=float).ravel()
-            if arr.size == 0:
-                raise ValueError("D arrays must be non-empty.")
-            if not _np.all(_np.isfinite(arr)) or _np.any(arr <= 0):
-                raise ValueError("All diameters in D must be finite and > 0 (µm).")
-            return arr
+            return _as_real_array(x, "D", positive=True)
+
+        def _validate_monodisperse_layers(d_layers):
+            mono_vals = _np.array([a.item() for a in d_layers], dtype=float)
+            if _np.any(_np.diff(mono_vals) <= 0):
+                raise ValueError(
+                    "For multilayer monodisperse, D must be strictly increasing from inner to outer layer."
+                )
+
+        def _validate_polydisperse_layers(d_layers):
+            lengths = _np.array([a.size for a in d_layers], dtype=int)
+            if not _np.all(lengths == lengths[0]):
+                raise ValueError(
+                    "For multilayer polydisperse, all layer arrays in D must have the same length."
+                )
+            D_stack = _np.vstack(d_layers)
+            if _np.any(_np.diff(D_stack, axis=0) <= 0):
+                raise ValueError(
+                    "For multilayer polydisperse, diameters must be element-wise strictly increasing across layers."
+                )
+            return int(lengths[0])
         
         # single-layer monodisperse
         if _np.isscalar(D) or (isinstance(D, _np.ndarray) and _np.asarray(D).ndim == 0):
             D_out = [_np.array([float(D)], dtype=float)]
+
+        elif isinstance(D, _np.ndarray):
+            arr = _np.asarray(D)
+            if arr.ndim == 1:
+                D_arr = _as_1d_array_positive(D)
+                if n_layers_hint is not None and n_layers_hint > 1:
+                    if D_arr.size != n_layers_hint:
+                        raise ValueError(
+                            "For multilayer inputs, a 1D array D must provide exactly one diameter per layer."
+                        )
+                    D_out = [_np.array([float(di)], dtype=float) for di in D_arr]
+                    _validate_monodisperse_layers(D_out)
+                else:
+                    D_out = [D_arr]
+            elif arr.ndim == 2:
+                D_arr = _np.asarray(D, dtype=float)
+                if D_arr.size == 0:
+                    raise ValueError("D arrays must be non-empty.")
+                if n_layers_hint is not None and D_arr.shape[0] != n_layers_hint and D_arr.shape[1] == n_layers_hint:
+                    D_arr = D_arr.T
+                if n_layers_hint is not None and D_arr.shape[0] != n_layers_hint:
+                    raise ValueError(
+                        "For multilayer inputs, a 2D array D must have shape (n_layers, n_bins)."
+                    )
+                D_out = [_as_1d_array_positive(row) for row in D_arr]
+                n_bins = _validate_polydisperse_layers(D_out)
+            else:
+                raise TypeError("D must be a scalar, a 1D/2D array, or a list/tuple of layer diameters.")
 
         # multilayer sphere
         elif isinstance(D, (list, tuple)):
@@ -299,31 +455,14 @@ def _check_mie_inputs(lam=None, N_host=None, Np_shells=None, D=None, *, size_dis
 
             lengths = _np.array([a.size for a in D_list], dtype=int)
             if _np.any(lengths > 1):
-                # polydisperse multilayer
-                n_bins = int(lengths.max())
-                
-                if not _np.all(lengths == n_bins):
-                    raise ValueError("For multilayer polydisperse, all layer arrays in D must have the same length.")
-                D_stack = _np.vstack(D_list)
-                
-                if _np.any(_np.diff(D_stack, axis=0) <= 0):
-                    raise ValueError("For multilayer polydisperse, diameters must be element-wise strictly increasing across layers.")
+                n_bins = _validate_polydisperse_layers(D_list)
             else:
-                # multilayer monodisperse: strictly increasing floats
-                mono_vals = _np.array([a.item() for a in D_list], dtype=float)
-                
-                if _np.any(~_np.isfinite(mono_vals)) or _np.any(mono_vals <= 0):
-                    raise ValueError("All diameters in D must be finite and > 0 (µm).")
-                
-                if _np.any(_np.diff(mono_vals) < 0):
-                    raise ValueError("For multilayer monodisperse, D must be strictly increasing (inner <= ... <= outer).")
+                _validate_monodisperse_layers(D_list)
 
             D_out = D_list
 
         else:
-            # single-layer polydisperse (1D array)
-            arr = _as_1d_array_positive(D)
-            D_out = [arr]
+            raise TypeError("D must be a scalar, a 1D/2D array, or a list/tuple of layer diameters.")
 
         if n_bins is None:
             n_bins = int(max(a.size for a in D_out))
@@ -396,19 +535,21 @@ def _check_mie_inputs(lam=None, N_host=None, Np_shells=None, D=None, *, size_dis
             N_host_out = arr
 
     # ---- size_dist (normalize & validate) ----
-    # If size_dist is None, inputs must be monodisperse.
     if D_out is None:
         # Without D, default to None
         size_dist_out = None
     else:
         is_mono = all(a.size == 1 for a in D_out)
         if size_dist is None:
-            if not is_mono:
+            if is_mono:
+                size_dist_out = None
+            else:
+                n_bins = D_out[0].size
                 print(
-                    "size_dist is None but D is polydisperse. "
-                    "Skipping size distribution check."
+                    "size_dist is None for polydisperse D. "
+                    "Assuming a uniform number distribution."
                 )
-            size_dist_out = None
+                size_dist_out = _np.full(n_bins, 1.0 / n_bins, dtype=float)
         else:
             sd = _np.asarray(size_dist, dtype=float).ravel()
             if not _np.all(_np.isfinite(sd)) or _np.any(sd < 0) or sd.size == 0:
@@ -547,7 +688,7 @@ def rt_style_mapper(sample: _pd.DataFrame,
             # match line style keywords at end of column name
             if col_name.lower().endswith(key):
                 style[col_name] = ls + color
-                label[col_name] = f"${rt_type}_\mathrm{{{key}}}$"
+                label[col_name] = f"${rt_type}_\\mathrm{{{key}}}$"
                 found = True
                 break
 

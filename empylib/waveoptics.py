@@ -8,29 +8,7 @@ Created on Sun Nov  7 17:25:53 2021
 """
 
 import numpy as np
-
-
-def _as_1d_array(values, name, dtype=None):
-    """Convert scalar/sequence input to a 1D numpy array."""
-    array = np.asarray(values, dtype=dtype)
-    if array.ndim == 0:
-        array = array.reshape(1)
-    if array.ndim != 1:
-        raise ValueError(f'{name} must be a scalar or a 1D array')
-    return array
-
-
-def _as_spectral_index_array(index_value, name, n_wavelengths):
-    """Convert scalar or 1D array refractive index to spectral 1D complex array."""
-    if np.isscalar(index_value):
-        return np.full(n_wavelengths, complex(index_value), dtype=complex)
-
-    index_array = np.asarray(index_value, dtype=complex)
-    if index_array.ndim != 1 or len(index_array) != n_wavelengths:
-        raise ValueError(
-            f'{name} must be a scalar or a 1D ndarray with size len(wavelength)'
-        )
-    return index_array
+from .utils import _as_1d_array, _as_carray, _as_real_array, _normalize_multilayer_inputs
 
 
 def _resolve_polarization(polarization):
@@ -53,20 +31,34 @@ def _resolve_polarization(polarization):
     raise ValueError("polarization must be False, 'TE', or 'TM'")
 
 
-def _mean_results(results_a, results_b):
-    """Element-wise mean for function outputs with same structure."""
-    return tuple((value_a + value_b) / 2 for value_a, value_b in zip(results_a, results_b))
+def _unpolarized_output(results_TE, results_TM):
+    '''Average TE and TM results for unpolarized output format.'''
 
+    if len(results_TE) != len(results_TM):
+        raise ValueError('TE and TM results must have the same number of outputs')
+    
+    # average R and T for unpolarized output
+    R_TE, T_TE = results_TE[:2]
+    R_TM, T_TM = results_TM[:2]
+    R = (R_TE + R_TM) / 2
+    T = (T_TE + T_TM) / 2
 
-def _validate_layer_index_type(index_value, name):
-    """Allow only scalar or 1D ndarray as multilayer refractive index input."""
-    if np.isscalar(index_value):
-        return
-    if not isinstance(index_value, np.ndarray):
-        raise TypeError(f'{name} must be a scalar or a 1D ndarray')
+    # simulation from incoherent sources may only have R and T
+    if len(results_TE) == 2:
+        out = (R, T)
 
+    # simulation from coherent sources also have r and t
+    elif len(results_TE) == 4:
+        r_TE, t_TE = results_TE[2:]
+        r_TM, t_TM = results_TM[2:]
+        r = {'TE': r_TE, 'TM': r_TM}
+        t = {'TE': t_TE, 'TM': t_TM}
 
-def interface(N_above, N_below, *, aoi = 0, polarization='TM'):
+        out = (R, T, r, t)
+    
+    return out
+
+def interface(N_above, N_below, *, aoi = 0, polarization=False):
     '''
     Computes the Fresnel coeficients  and energy flux of at an interface. For
     each angle of incidence, this function will compute the Fresnel coeficients at the 
@@ -85,7 +77,8 @@ def interface(N_above, N_below, *, aoi = 0, polarization='TM'):
         
     polarization: str (optional)
         Polarization of incident field. Could be:
-            - 'TM' transverse magnetic (default)
+            - False for unpolarized light (default, averages TE and TM)
+            - 'TM' transverse magnetic
             - 'TE' transverse electric
 
     Returns
@@ -104,75 +97,127 @@ def interface(N_above, N_below, *, aoi = 0, polarization='TM'):
     
     '''
     # Normalize inputs to 1D spectral/angle arrays.
-    th = _as_1d_array(aoi, 'aoi', dtype=complex)
+    th = _as_real_array(aoi, 'aoi').astype(complex)
     th_scalar = np.isscalar(aoi)
 
-    n1 = _as_1d_array(N_above, 'N_above', dtype=complex)
-    n2 = _as_1d_array(N_below, 'N_below', dtype=complex)
-
-    # Broadcast scalar indices to match spectral arrays when needed.
-    ns = max(len(n1), len(n2))
-    if len(n1) not in (1, ns):
-        raise ValueError('N1 size must match N2 size, or be scalar')
-    if len(n2) not in (1, ns):
-        raise ValueError('N2 size must match N1 size, or be scalar')
-
-    if len(n1) == 1:
-        n1 = np.full(ns, n1[0], dtype=complex)
-    if len(n2) == 1:
-        n2 = np.full(ns, n2[0], dtype=complex)
+    n1_raw = np.asarray(N_above)
+    n2_raw = np.asarray(N_below)
+    ns = max(n1_raw.size if n1_raw.ndim else 1, n2_raw.size if n2_raw.ndim else 1)
+    n1 = _as_carray(N_above, 'N_above', ns, val_type=complex)
+    n2 = _as_carray(N_below, 'N_below', ns, val_type=complex)
 
     # Build angle x wavelength grids for vectorized Fresnel computation.
     n_i, th_grid = np.meshgrid(n1, th)
     n_t = np.meshgrid(n2, th)[0]
 
-    s_i = np.sin(th_grid)
-    c_i = np.cos(th_grid)
-    s_t = n_i * s_i / n_t
-    c_t = np.sqrt(1 - s_t**2)
+    sin_i = np.sin(th_grid)
+    cos_i = np.cos(th_grid)
+    sin_t = n_i * sin_i / n_t
+    cos_t = np.sqrt(1 - sin_t**2)
+
+    # Determine which polarization(s) to compute based on input.
+    pols = _resolve_polarization(polarization)
 
     # Fresnel amplitude coefficients (r, t) and power coefficients (R, T).
-    p = polarization.upper()
-    if p == 'TM':
-        r = (n_i * c_t - n_t * c_i) / (n_i * c_t + n_t * c_i)
-        t = (2 * n_i * c_i) / (n_i * c_t + n_t * c_i)
-        R = np.abs(r * np.conj(r))
-        T = np.abs(
-            np.real(np.conj(n_t) * c_t) * t * np.conj(t)
-            / np.real(np.conj(n_i) * c_i)
-        )
-    elif p == 'TE':
-        r = (n_i * c_i - n_t * c_t) / (n_i * c_i + n_t * c_t)
-        t = (2 * n_i * c_i) / (n_i * c_i + n_t * c_t)
-        R = np.abs(r * np.conj(r))
-        T = np.abs(
-            np.real(n_t * c_t) * t * np.conj(t)
-            / np.real(n_i * c_i)
-        )
-    else:
-        raise ValueError("polarization must be either 'TM' or 'TE'")
+    out = {}
+    for p in pols:
+        if p == 'TM':
+            r = (n_i * cos_t - n_t * cos_i) / (n_i * cos_t + n_t * cos_i)
+            t = (2 * n_i * cos_i) / (n_i * cos_t + n_t * cos_i)
+            R = np.abs(r * np.conj(r))
+            T = np.abs(
+                np.real(np.conj(n_t) * cos_t) * t * np.conj(t)
+                / np.real(np.conj(n_i) * cos_i)
+            )
+        elif p == 'TE':
+            r = (n_i * cos_i - n_t * cos_t) / (n_i * cos_i + n_t * cos_t)
+            t = (2 * n_i * cos_i) / (n_i * cos_i + n_t * cos_t)
+            R = np.abs(r * np.conj(r))
+            T = np.abs(
+                np.real(n_t * cos_t) * t * np.conj(t)
+                / np.real(n_i * cos_i)
+            )
 
-    if th_scalar:
-        return (
-            R.reshape(-1,),
-            T.reshape(-1,),
-            r.reshape(-1,),
-            t.reshape(-1,),
-        )
-    return R, T, r, t
+        if th_scalar:
+            out[p] = (
+                R.reshape(-1,),
+                T.reshape(-1,),
+                r.reshape(-1,),
+                t.reshape(-1,),
+            )
+        else:
+            out[p] = (R, T, r, t)
 
+    if len(pols) == 1:
+        return out[pols[0]]
+    return _unpolarized_output(out['TE'], out['TM'])
 
-def _multilayer_single_polarization(
+def multilayer(
     lam,
-    aoi,
-    N_layers,
-    thickness,
+    aoi=0,
+    N_layers=None,
+    thickness=None,
     *,
     N_above=1.0,
     N_below=1.0,
-    polarization='TM'
+    polarization=False
 ):
-    """Internal coherent multilayer solver for one or both polarizations."""
+    '''
+    Get Fresnel coeficients and energy flux of multilayered films. The function 
+    computes the spectral Fresnel coefficients at each angle of incidence
+
+    Parameters
+    ----------
+    lam : ndarray or float
+        Wavelength range in microns.
+        
+    aoi : ndarray or float, optional
+        Angle of incidence in radians.
+        
+    N_layers : float, ndarray, or list
+        Refractive index of each finite layer. It can be:
+        - a single float (single-layer, wavelength-independent),
+        - a single 1D ndarray (single-layer, wavelength-dependent),
+        - a list of floats,
+        - or a mixed list of floats and 1D ndarrays, where each ndarray has
+          size len(lam).
+        
+    thickness : list or float
+        Thickness of each layer in microns. A single float is allowed for a
+        single-layer case.
+
+    N_above : float (optional)
+        Refractive index of the medium above the film (default 1.0)
+    
+    N_below : float (optional)
+        Refractive index of the medium below the film (default 1.0)
+        
+    polarization: bool or str (optional)
+        Polarization of incident field:
+            - False for unpolarized light (default, averages TE and TM)
+            - 'TM' transverse magnetic
+            - 'TE' transverse electric
+
+    Returns
+    -------
+    R: ndarray
+        Reflectivity
+        
+    T: ndarray
+        Transmissivity
+        
+    r : ndarray
+        Reflection coeficient
+        
+    t: ndarray
+        Transmission coeficient
+
+    '''
+    if N_layers is None:
+        N_layers = []
+    if thickness is None:
+        thickness = []
+
     # Validate and standardize multilayer inputs to spectral arrays.
     wl, dL, nL, n0, nS = _assert_multilayer_input(
         lam, thickness, N_layers, N_above=N_above, N_below=N_below
@@ -283,84 +328,7 @@ def _multilayer_single_polarization(
 
     if len(pols) == 1:
         return out[pols[0]]
-    return _mean_results(out['TE'], out['TM'])
-
-
-def multilayer(
-    lam,
-    aoi=0,
-    N_layers=None,
-    thickness=None,
-    *,
-    N_above=1.0,
-    N_below=1.0,
-    polarization=False
-):
-    '''
-    Get Fresnel coeficients and energy flux of multilayered films. The function 
-    computes the spectral Fresnel coefficients at each angle of incidence
-
-    Parameters
-    ----------
-    lam : ndarray or float
-        Wavelength range in microns.
-        
-    aoi : ndarray or float, optional
-        Angle of incidence in radians.
-        
-    N_layers : float, ndarray, or list
-        Refractive index of each finite layer. It can be:
-        - a single float (single-layer, wavelength-independent),
-        - a single 1D ndarray (single-layer, wavelength-dependent),
-        - a list of floats,
-        - or a mixed list of floats and 1D ndarrays, where each ndarray has
-          size len(lam).
-        
-    thickness : list or float
-        Thickness of each layer in microns. A single float is allowed for a
-        single-layer case.
-
-    N_above : float (optional)
-        Refractive index of the medium above the film (default 1.0)
-    
-    N_below : float (optional)
-        Refractive index of the medium below the film (default 1.0)
-        
-    polarization: bool or str (optional)
-        Polarization of incident field:
-            - False for unpolarized light (default, averages TE and TM)
-            - 'TM' transverse magnetic
-            - 'TE' transverse electric
-
-    Returns
-    -------
-    R: ndarray
-        Reflectivity
-        
-    T: ndarray
-        Transmissivity
-        
-    r : ndarray
-        Reflection coeficient
-        
-    t: ndarray
-        Transmission coeficient
-
-    '''
-    if N_layers is None:
-        N_layers = []
-    if thickness is None:
-        thickness = []
-
-    return _multilayer_single_polarization(
-        lam,
-        aoi,
-        N_layers,
-        thickness,
-        N_above=N_above,
-        N_below=N_below,
-        polarization=polarization,
-    )
+    return _unpolarized_output(out['TE'], out['TM'])
 
 def incoh_multilayer(
     lam,
@@ -468,14 +436,7 @@ def incoh_multilayer(
             th_end = coh[pols[0]][4]
 
             # In incoherent layers, only attenuation survives (random phase averaging).
-            phi_d = (
-                2
-                * np.pi
-                / wl
-                * n_all[j + 1]
-                * np.cos(th_end)
-                * dL[j]
-            )
+            phi_d = (2* np.pi / wl * n_all[j + 1] * np.cos(th_end) * dL[j])
             att = np.exp(-2 * phi_d.imag)
             att = att * (att >= 1e-30) + (att < 1e-30) * 1e-30
 
@@ -531,7 +492,7 @@ def incoh_multilayer(
 
     if len(pols) == 1:
         return out[pols[0]]
-    return _mean_results(out['TE'], out['TM'])
+    return _unpolarized_output(out['TE'], out['TM'])
 
 def _assert_multilayer_input(lam, thickness, N_layers, *, N_above=1.0, N_below=1.0):
     '''
@@ -579,76 +540,12 @@ def _assert_multilayer_input(lam, thickness, N_layers, *, N_above=1.0, N_below=1
 
     '''
     # Wavelength must be positive and represented as 1D array.
-    lam = _as_1d_array(lam, 'lam', dtype=float)
-    if np.any(lam <= 0):
-        raise ValueError('lam must contain positive values')
-
-    # Thickness can be a single float (single-layer) or a list of float values.
-    if thickness is None:
-        dL = []
-    elif np.isscalar(thickness):
-        if isinstance(thickness, (bool, np.bool_)) or np.iscomplexobj(thickness):
-            raise TypeError('thickness must be a real float')
-        dval = float(thickness)
-        if not np.isfinite(dval):
-            raise ValueError('thickness must be finite')
-        if dval < 0:
-            raise ValueError('thickness must be non-negative')
-        dL = [dval]
-    elif not isinstance(thickness, list):
-        raise TypeError('thickness must be a float or a list of float values')
-    else:
-        dL = []
-        for i, di in enumerate(thickness):
-            if not np.isscalar(di):
-                raise TypeError(f'thickness[{i}] must be a float')
-            if isinstance(di, (bool, np.bool_)) or np.iscomplexobj(di):
-                raise TypeError(f'thickness[{i}] must be a real float')
-            dval = float(di)
-            if not np.isfinite(dval):
-                raise ValueError(f'thickness[{i}] must be finite')
-            if dval < 0:
-                raise ValueError(f'thickness[{i}] must be non-negative')
-            dL.append(dval)
-
-    # Layer refractive indices can be a single scalar/ndarray (single-layer) or a list.
-    if N_layers is None:
-        N_layers = []
-    elif np.isscalar(N_layers):
-        if isinstance(N_layers, (bool, np.bool_)):
-            raise TypeError('N_layers must be numeric')
-        N_layers = [N_layers]
-    elif isinstance(N_layers, np.ndarray):
-        N_layers = [N_layers]
-    elif not isinstance(N_layers, list):
-        raise TypeError('N_layers must be a float, ndarray, or a list with one element per finite layer')
-
-    if len(N_layers) != len(dL):
-        raise ValueError('len(N_layers) must be equal to len(thickness)')
-
-    # Convert each layer index to spectral complex array with size len(lam).
-    nL = []
-    for i, ni in enumerate(N_layers):
-        _validate_layer_index_type(ni, f'N_layers[{i}]')
-        nL.append(
-            _as_spectral_index_array(ni, f'N_layers[{i}]', len(lam))
-        )
-
-    _validate_layer_index_type(N_above, 'N_above')
-    _validate_layer_index_type(N_below, 'N_below')
-    n0 = _as_spectral_index_array(
-        N_above, 'N_above', len(lam)
-    )
-    nS = _as_spectral_index_array(
-        N_below, 'N_below', len(lam)
-    )
-
-    return (
+    return _normalize_multilayer_inputs(
         lam,
-        dL,
-        nL,
-        n0,
-        nS,
+        thickness,
+        N_layers,
+        N_above=N_above,
+        N_below=N_below,
     )
 
 def _TMMcoh(lam, aoi, N_layers, thickness, polarization):

@@ -8,7 +8,7 @@ import numpy as _np
 from numpy import pi, exp, conj, imag, real, sqrt
 from scipy.special import jv, yv
 from .nklib import emt_brugg, emt_multilayer_sphere
-from .utils import _check_mie_inputs, _check_theta, _hide_signature
+from .utils import _as_carray, _check_mie_inputs, _check_theta, _hide_signature
 import pandas as _pd
 from typing import Union as _Union, Optional as _Optional, List as _List
 
@@ -306,6 +306,68 @@ def _cross_section_at_lam(m,x,nmax = None):
 
     return Qext, Qsca, Asym, Qb, Qf
 
+def _normalize_single_particle_inputs(
+    lam: _Union[float, _np.ndarray],
+    Nh: _Union[float, _np.ndarray],
+    Np: _Union[float, _np.ndarray, _List[_Union[float, _np.ndarray]]],
+    D: _Union[float, _np.ndarray, _List[_Union[float, _np.ndarray]]],
+    *,
+    check_inputs: bool = True,
+):
+    """
+    Normalize the single-particle API to the same scalar/array conventions used
+    by ``rad_transfer``.
+
+    Returns
+    -------
+    lam : ndarray, shape (nlam,)
+    Nh : ndarray, shape (nlam,)
+    Np : ndarray, shape (n_layers, nlam)
+    D_layers : list[ndarray]
+        One diameter array per shell.
+    D_shells : ndarray, shape (n_layers,)
+        One scalar diameter per shell. Polydisperse inputs are rejected here.
+    """
+    if check_inputs:
+        lam, Nh, Np, D, _ = _check_mie_inputs(lam, Nh, Np, D)
+
+    lam = _np.atleast_1d(_np.asarray(lam, dtype=float))
+    if lam.ndim != 1 or lam.size == 0:
+        raise ValueError("lam must be a non-empty 1D array.")
+
+    Nh = _as_carray(Nh, "Nh", lam.size, val_type=complex)
+    Np = _np.asarray(Np, dtype=complex)
+    if Np.ndim == 1:
+        Np = Np.reshape(1, -1)
+    if Np.ndim != 2 or Np.shape[1] != lam.size:
+        raise ValueError("Np must resolve to shape (n_layers, len(lam)).")
+
+    if _np.isscalar(D):
+        D_layers = [_np.array([float(D)], dtype=float)]
+    elif isinstance(D, _np.ndarray):
+        if D.ndim == 1:
+            D_layers = [_np.asarray(D, dtype=float).ravel()]
+        elif D.ndim == 2:
+            D_layers = [_np.asarray(row, dtype=float).ravel() for row in D]
+        else:
+            raise ValueError("D must be a scalar, a 1D/2D array, or a list of layer diameters.")
+    elif isinstance(D, (list, tuple)):
+        D_layers = [_np.atleast_1d(_np.asarray(layer, dtype=float)).ravel() for layer in D]
+    else:
+        raise TypeError("D must be a scalar, a 1D/2D array, or a list of layer diameters.")
+
+    if len(D_layers) != Np.shape[0]:
+        raise ValueError("The number of shell diameters must match the number of refractive-index layers.")
+
+    if any(layer.size != 1 for layer in D_layers):
+        raise ValueError(
+            "This function expects a single particle with one diameter per shell. "
+            "Use the ensemble functions for polydisperse size distributions."
+        )
+
+    D_shells = _np.asarray([float(layer[0]) for layer in D_layers], dtype=float)
+    return lam, Nh, Np, D_layers, D_shells
+
 @_hide_signature
 def scatter_efficiency(lam: _Union[float, _np.ndarray],
                        Nh: _Union[float, _np.ndarray],
@@ -354,17 +416,14 @@ def scatter_efficiency(lam: _Union[float, _np.ndarray],
     gcos : ndarray
         Asymmetry parameter
     '''
-    # first check inputs and arrange them in np arrays
-    if check_inputs:
-        lam, Nh, Np, D, _ = _check_mie_inputs(lam, Nh, Np, D)
+    lam, Nh, Np, _, D_shells = _normalize_single_particle_inputs(
+        lam, Nh, Np, D, check_inputs=check_inputs
+    )
 
-    D = _np.asarray(D)              # ensure D is np array
-
-    m = Np/Nh.real                  # sphere layers
-    R = D/2                         # particle's inner radius
-    kh = 2*pi*Nh.real/lam           # wavector in the host
-    x = _np.tensordot(kh,R,axes=0)  # size parameter
-    m = m.transpose()
+    m = (Np / Nh.real).transpose()
+    R = D_shells / 2.0
+    kh = 2 * pi * Nh.real / lam
+    x = _np.outer(kh, R)
     
     # Preallocate outputs
     qext = _np.zeros_like(lam, dtype=float)
@@ -421,17 +480,14 @@ def scatter_coefficients(lam: _Union[float, _np.ndarray],
     bn : ndarray
         Scattering coefficient N function
     '''
-    # first check inputs and arrange them in np arrays
-    if check_inputs:
-        lam, Nh, Np, D, _ = _check_mie_inputs(lam, Nh, Np, D)
+    lam, Nh, Np, _, D_shells = _normalize_single_particle_inputs(
+        lam, Nh, Np, D, check_inputs=check_inputs
+    )
 
-    D = _np.asarray(D)              # ensure D is np array
-    
-    m = Np/Nh.real                  # sphere layers
-    R = D/2                         # particle's inner radius
-    kh = 2*pi*Nh.real/lam           # wavector in the host
-    x = _np.tensordot(kh,R,axes=0)  # size parameter
-    m = m.transpose()
+    m = (Np / Nh.real).transpose()
+    R = D_shells / 2.0
+    kh = 2 * pi * Nh.real / lam
+    x = _np.outer(kh, R)
 
     # determine nmax 
     if nmax is None :
@@ -608,8 +664,10 @@ def scatter_stokes(lam: _Union[float, _np.ndarray],
     theta = _check_theta(theta)
     
     # Get scattering amplitude elements S1 and S2
-    s1, s2 = scatter_amplitude(theta, lam, Nh, Np, D, 
-                               nmax=nmax, check_inputs = False)
+    s1, s2 = scatter_amplitude(lam, Nh, Np, D,
+                               theta=theta,
+                               nmax=nmax,
+                               check_inputs=False)
 
     # Compute stokes parameters
     S11 =1/2*(_np.abs(s1)**2 + _np.abs(s2)**2)
@@ -665,8 +723,9 @@ def _phase_function_single(lam: _Union[float, _np.ndarray],
         phase_fun: the scattering phase function (as pd.DataFrame or ndarray)
     """
     # Organize D format
-    if check_inputs:
-        lam, Nh, Np, D, _ = _check_mie_inputs(lam, Nh, Np, D)
+    lam, Nh, Np, _, D_shells = _normalize_single_particle_inputs(
+        lam, Nh, Np, D, check_inputs=check_inputs
+    )
     
     # checks variable theta
     theta = _check_theta(theta)
@@ -678,7 +737,7 @@ def _phase_function_single(lam: _Union[float, _np.ndarray],
                                check_inputs = False)
 
     # Scale factor
-    x = _np.pi*Nh.real*D[-1]/lam
+    x = _np.pi * Nh.real * D_shells[-1] / lam
     scale_factor = _np.pi*x**2
 
     # Compute phase function
@@ -727,19 +786,19 @@ def phase_scatt_HG(lam: _Union[float, _np.ndarray],
         p_theta_HG: float or ndarray
             Phase function
     """
-    if _np.isscalar(theta): theta = _np.array([theta])
-    if _np.isscalar(gcos): theta = _np.array([gcos])
-    if not _np.isscalar(qsca) and (len(qsca) != len(gcos)): 
-        raise ValueError("qsca and gcos must be of same size.")
-    
-    # checks variable theta
+    lam = _np.atleast_1d(_np.asarray(lam, dtype=float))
+    if lam.ndim != 1 or lam.size == 0:
+        raise ValueError("lam must be a non-empty 1D array.")
+
+    gcos = _as_carray(gcos, "gcos", lam.size, val_type=float)
+    qsca = _as_carray(qsca, "qsca", lam.size, val_type=float)
     theta = _check_theta(theta)
 
     gg, tt = _np.meshgrid(gcos, theta)
 
     p_theta_HG = 1/(4*_np.pi)*(1 - gg**2)/(1 + gg**2 - 2*gg*_np.cos(tt))**(3/2)
 
-    p_theta_HG = qsca*p_theta_HG
+    p_theta_HG = p_theta_HG * qsca.reshape(1, -1)
 
     # return phase function as ndarray
     if as_ndarray: return p_theta_HG
@@ -1131,14 +1190,14 @@ def phase_scatt_ensemble(lam: _Union[float, _np.ndarray],
     if effective_medium and fv > 0:
         # Compute effective refractive index of host using Bruggeman EMT
         D_layers_mean = []
-        for i in range(N_layers - 1):
+        for i in range(N_layers):
             if size_dist is None:
                 # Monodisperse
-                D_layers_mean.append(D[i])  # -> float
-        else:
-            # Polydisperse
-            D_layers_mean.append(_np.average(D[i], axis=0,   # -> float
-                                        weights=size_dist))  # size_dist shape (n_bins,)
+                D_layers_mean.append(float(_np.asarray(D[i]).ravel()[0]))
+            else:
+                # Polydisperse
+                D_layers_mean.append(_np.average(D[i], axis=0,   # -> float
+                                            weights=size_dist))  # size_dist shape (n_bins,)
                                         
         Np_eff = emt_multilayer_sphere(D_layers_mean, Np, check_inputs=False)
         Nh = emt_brugg(fv, Np_eff, Nh)
@@ -1290,7 +1349,7 @@ def cross_section_ensemble(
         D_layers_mean = []
         for i in range(N_layers):
             if size_dist is None:
-                D_layers_mean.append(D[i])  # -> float
+                D_layers_mean.append(float(_np.asarray(D[i]).ravel()[0]))
             else:
                 # Polydisperse
                 D_layers_mean.append(_np.average(D[i], axis=0,   # -> float

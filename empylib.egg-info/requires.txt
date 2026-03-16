@@ -1,0 +1,8 @@
+numpy>=1.15.0
+pandas>=0.24.0
+scipy>=1.1.0
+pyyaml>=5.1
+requests>=2.18.0
+typing-extensions>=4.0
+colour-science>=0.4.6
+iadpython@ git+https://github.com/PanxoPanza/iadpython.git

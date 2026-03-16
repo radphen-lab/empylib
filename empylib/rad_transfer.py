@@ -21,7 +21,9 @@ import pandas as pd
 from typing import Union as _Union, Optional as _Optional, List as _List, Tuple as _Tuple
 from .utils import _as_carray, _check_mie_inputs, _hide_signature
 from .nklib import emt_brugg, emt_multilayer_sphere
-from inspect import Signature
+from inspect import Signature, signature as _signature
+
+_IAD_SUPPORTS_TABULATED_PF = "pf_type" in _signature(_iad.Sample.__init__).parameters
 
 @_hide_signature
 def T_beer_lambert(lam: _Union[float, _np.ndarray],                                         # wavelengths [µm]
@@ -138,7 +140,7 @@ def T_beer_lambert(lam: _Union[float, _np.ndarray],                             
         for i in range(N_layers):
             if size_dist is None:
                 # Monodisperse
-                D_layers_mean.append(D[i])  # -> float
+                D_layers_mean.append(float(_np.asarray(D[i]).ravel()[0]))
             else:
                 # Polydisperse
                 D_layers_mean.append(_np.average(D[i], axis=0,   # -> float
@@ -170,13 +172,30 @@ def T_beer_lambert(lam: _Union[float, _np.ndarray],                             
 
     # ---------- Fresnel reflectance/transmittance ----------
     tfilm = tfilm*1E3 # convert mm to micron units
-    
-    Rp, Tp = wv.incoh_multilayer(lam, theta, [Nup, Nh, Ndw], tfilm, polarization='TM')
-    Rs, Ts = wv.incoh_multilayer(lam, theta, [Nup, Nh, Ndw], tfilm, polarization='TE')
+
+    theta_rad = _np.radians(theta)
+    Rp, Tp = wv.incoh_multilayer(
+        lam,
+        N_layers=[Nh],
+        thickness=tfilm,
+        aoi=theta_rad,
+        N_above=Nup,
+        N_below=Ndw,
+        polarization='TM',
+    )
+    Rs, Ts = wv.incoh_multilayer(
+        lam,
+        N_layers=[Nh],
+        thickness=tfilm,
+        aoi=theta_rad,
+        N_above=Nup,
+        N_below=Ndw,
+        polarization='TE',
+    )
     T    = (Ts + Tp)/2
     Rtot = (Rp + Rs)/2
     
-    theta1 = wv.snell(Nup,Nh, theta)
+    theta1 = wv.snell(Nup, Nh, theta_rad)
         
     Ttot = T*_np.exp(-k_abs*tfilm/_np.cos(theta1.real))
     Tspec = T*_np.exp(-k_ext*tfilm/_np.cos(theta1.real))
@@ -308,7 +327,7 @@ def adm_sphere(lam: _Union[float, _np.ndarray],                                 
         for i in range(N_layers):
             if size_dist is None:
                 # Monodisperse
-                D_layers_mean.append(D[i])  # -> float
+                D_layers_mean.append(float(_np.asarray(D[i]).ravel()[0]))
             else:
                 # Polydisperse
                 D_layers_mean.append(_np.average(D[i], axis=0,   # -> float
@@ -468,15 +487,22 @@ def adm(lam, tfilm, k_sca, k_abs, Nh,
         if PF.shape != (theta_idx.size, nlam):
             raise ValueError("phase_fun must have shape (nθ, nλ) matching lam.")
 
-        # Convert θ → μ and sort ascending in [-1, 1]
-        mu = _np.cos(_np.radians(theta_idx))
-        order = _np.argsort(mu)    # ascending
-        mu = mu[order]
-        PF = PF[order, :]
+        if _IAD_SUPPORTS_TABULATED_PF:
+            # Convert θ → μ and sort ascending in [-1, 1]
+            mu = _np.cos(_np.radians(theta_idx))
+            order = _np.argsort(mu)    # ascending
+            mu = mu[order]
+            PF = PF[order, :]
 
-        # IAD expects a DataFrame with index μ in [-1,1], one column per λ
-        pf_df = pd.DataFrame(PF, index=mu, columns=lam)
-        pf_df.index.name = "cos(theta)"
+            # IAD expects a DataFrame with index μ in [-1,1], one column per λ
+            pf_df = pd.DataFrame(PF, index=mu, columns=lam)
+            pf_df.index.name = "cos(theta)"
+        else:
+            # Older iadpython releases only expose Henyey-Greenstein anisotropy.
+            # Collapse the supplied phase function to an equivalent g(λ) so the
+            # public `phase_fun=` entrypoint remains usable in those environments.
+            _, gcos = mie.scatter_from_phase_function(phase_fun)
+            use_pf = False
 
     # ---------- run IAD per wavelength ----------
     Ttot  = _np.zeros(nlam, float)
