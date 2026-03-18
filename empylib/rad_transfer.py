@@ -12,7 +12,7 @@ import sys
 # empylib_folder = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 # sys.path.insert(0,empylib_folder)
 
-import numpy as _np
+import numpy as _N_particle
 from . import miescattering as mie
 from . import waveoptics as wv
 from . import nklib as nk
@@ -26,19 +26,19 @@ from inspect import Signature, signature as _signature
 _IAD_SUPPORTS_TABULATED_PF = "pf_type" in _signature(_iad.Sample.__init__).parameters
 
 @_hide_signature
-def T_beer_lambert(lam: _Union[float, _np.ndarray],                                         # wavelengths [µm]
-                   Nh: _Union[float, _np.ndarray],                                     # host refractive index
-                   Np: _Union[float, _np.ndarray, _List[_Union[float, _np.ndarray]]],  # particle refractive index
-                   D: _Union[float, _np.ndarray, _List[_Union[float, _np.ndarray]]],   # sphere diameters [µm] 
-                   fv: float,                                                          # film volume fraction 
-                   tfilm: float, 
+def T_beer_lambert(wavelength: _Union[float, _N_particle.ndarray],                             # wavelengths [µm]
+                   N_host: _Union[float, _N_particle.ndarray],                                 # host refractive index
+                   N_particle: _Union[float, _N_particle.ndarray, _List[_Union[float, _N_particle.ndarray]]],  # particle refractive index
+                   D: _Union[float, _N_particle.ndarray, _List[_Union[float, _N_particle.ndarray]]],   # sphere diameters [µm] 
+                   fv: float,                                                                  # film volume fraction 
+                   thickness: float, 
                    *,
-                   theta: _Union[float, _np.ndarray]= 0.0,                            # angle of incidence in degrees
-                   Nup: _Union[float, _np.ndarray] = 1.0,                              # refractive index above
-                   Ndw: _Union[float, _np.ndarray] = 1.0,                              # refractive index below
-                   size_dist: _np.ndarray = None,                                      # number-fraction weights p_i 
+                   aoi: _Union[float, _N_particle.ndarray]= 0.0,                               # angle of incidence (radians)
+                   N_above: _Union[float, _N_particle.ndarray] = 1.0,                          # refractive index above
+                   N_below: _Union[float, _N_particle.ndarray] = 1.0,                          # refractive index below
+                   size_dist: _N_particle.ndarray = None,                                      # number-fraction weights p_i 
                    dependent_scatt = False,                                            # use Perkus-Yevik for dependent scattering
-                   effective_medium: bool = False,                                     # whether to compute effective Nh via Bruggeman
+                   effective_medium: bool = False,                                     # whether to compute effective N_host via Bruggeman
                    use_phase_fun: bool = False,                                        # whether to use phase function instead of g
                    check_inputs = True                                                 # whether to check mie inputs
                    ):
@@ -49,38 +49,38 @@ def T_beer_lambert(lam: _Union[float, _np.ndarray],                             
     (no scattering is considered for this parameter)
 
     Parameters
-    lam : array-like, shape (nλ,)
+    wavelength : array-like, shape (nλ,)
         Wavelengths [µm], strictly positive.
 
-    Nh : float or array-like (nλ,)
-        Host refractive index (can be complex). If array-like, length must equal len(lam).
+    N_host : float or array-like (nλ,)
+        Host refractive index (can be complex). If array-like, length must equal len(wavelength).
 
-    Np (float, 1darray or list): Complex refractive index of each 
-                                            shell layer. Np.shape[1] == len(D). 
+    N_particle (float, 1darray or list): Complex refractive index of each 
+                                            shell layer. N_particle.shape[1] == len(D). 
         Options are:
         float:   solid sphere and constant refractive index
-        1darray: solid sphere and spectral refractive index (len = lam)
+        1darray: solid sphere and spectral refractive index (len = wavelength)
         list:    multilayered sphere (with both constant or spectral refractive indexes)
     
-    D : float, _np.ndarray or list
+    D : float, _N_particle.ndarray or list
         Diameter of the spheres. Use float for monodisperse, or array for polydisperse.
         if multilayer sphere, use list of floats (monodisperse) or arrays (polydisperse).
     
     fv : float
-        Particle volume fraction in (0, 1). Used only to compute an effective medium Nh via
-        `nk.emt_brugg(fv, Np, Nh)`.
+        Particle volume fraction in (0, 1). Used only to compute an effective medium N_host via
+        `nk.emt_brugg(fv, N_particle, N_host)`.
 
-    tfilm : float
+    thickness : float
         Film thickness [mm], ≥ 0.
 
-    theta : float or array-like, optional
-        Angle of incidence in degrees. Default is 0 (normal incidence). If array-like, length must equal len(lam).
+    aoi : float or array-like, optional
+        Angle of incidence in radians. Default is 0 (normal incidence). If array-like, length must equal len(wavelength).
 
-    Nup : float or array-like, optional
-        Refractive index above the film. Default is 1.0 (air). If array-like, length must equal len(lam).
+    N_above : float or array-like, optional
+        Refractive index above the film. Default is 1.0 (air). If array-like, length must equal len(wavelength).
 
-    Ndw : float or array-like, optional
-        Refractive index below the film. Default is 1.0 (air). If array-like, length must equal len(lam).
+    N_below : float or array-like, optional
+        Refractive index below the film. Default is 1.0 (air). If array-like, length must equal len(wavelength).
 
     size_dist : array-like, shape (n_bins,), optional
         Number-fraction weights for polydisperse particles. Default is None (monodisper
@@ -106,7 +106,7 @@ def T_beer_lambert(lam: _Union[float, _np.ndarray],                             
         Whether to check mie inputs (default: True)    
 
     Returns
-    - results_df : pd.DataFrame with index=lam and columns:
+    - results_df : pd.DataFrame with index=wavelength and columns:
                 'Rtot' : total reflectance
                 'Ttot' : total transmittance
                 'Tspec': specular (unscattered) transmittance
@@ -115,24 +115,24 @@ def T_beer_lambert(lam: _Union[float, _np.ndarray],                             
 
     # ---------- coerce arrays & basic checks ----------
     if check_inputs:
-        lam, Nh, Np, D, size_dist = _check_mie_inputs(lam, Nh, Np, D, 
+        wavelength, N_host, N_particle, D, size_dist = _check_mie_inputs(wavelength, N_host, N_particle, D, 
                                                       size_dist=size_dist)
 
-    nlam = lam.size
-    Nup = _as_carray(Nup, "Nup", nlam, val_type=complex)
-    Ndw = _as_carray(Ndw, "Ndw", nlam, val_type=complex)
+    n_wavelengths = wavelength.size
+    N_above = _as_carray(N_above, "N_above", n_wavelengths, val_type=complex)
+    N_below = _as_carray(N_below, "N_below", n_wavelengths, val_type=complex)
 
     if not (0 <= float(fv) < 1):
         raise ValueError("fv (volume fraction) must be in [0,1).")
-    if not _np.isscalar(tfilm) or tfilm < 0:
-        raise ValueError("tfilm must be a nonnegative scalar in mm.")
+    if not _N_particle.isscalar(thickness) or thickness < 0:
+        raise ValueError("thickness must be a nonnegative scalar in mm.")
 
-    # if dependent scatt, check that particle is metallic through: Im(Np) > Re(Np)
+    # if dependent scatt, check that particle is metallic through: Im(N_particle) > Re(N_particle)
     if dependent_scatt:
-        if _np.any(_np.array(Np).real < _np.array(Np).imag):
+        if _N_particle.any(_N_particle.array(N_particle).real < _N_particle.array(N_particle).imag):
             print("Warning: Dependent scattering theory not recommended for metallic particles.")
     
-    # ---------- Effective medium for host (if your convention is to dress Nh) ----------
+    # ---------- Effective medium for host (if your convention is to dress N_host) ----------
     N_layers = len(D)                                    # number of layers in the sphere
     if effective_medium:
         # Compute mean diameter of each layer
@@ -140,18 +140,18 @@ def T_beer_lambert(lam: _Union[float, _np.ndarray],                             
         for i in range(N_layers):
             if size_dist is None:
                 # Monodisperse
-                D_layers_mean.append(float(_np.asarray(D[i]).ravel()[0]))
+                D_layers_mean.append(float(_N_particle.asarray(D[i]).ravel()[0]))
             else:
                 # Polydisperse
-                D_layers_mean.append(_np.average(D[i], axis=0,   # -> float
+                D_layers_mean.append(_N_particle.average(D[i], axis=0,   # -> float
                                             weights=size_dist))  # size_dist shape (n_bins,)
 
         # Compute effective refractive index of host using Bruggeman EMT                                   
-        Np_eff = emt_multilayer_sphere(D_layers_mean, Np, check_inputs=False)
-        Nh = emt_brugg(fv, Np_eff, Nh)
+        N_particle_eff = emt_multilayer_sphere(D_layers_mean, N_particle, check_inputs=False)
+        N_host = emt_brugg(fv, N_particle_eff, N_host)
 
     # ---------- Mie cross sections and phase function ----------
-    cabs, csca, _, _ = mie.cross_section_ensemble(lam, Nh, Np, D, fv, 
+    cabs, csca, _, _ = mie.cross_section_ensemble(wavelength, N_host, N_particle, D, fv, 
                                                   size_dist=size_dist,
                                                   check_inputs=False,
                                                   effective_medium=False,
@@ -160,9 +160,9 @@ def T_beer_lambert(lam: _Union[float, _np.ndarray],                             
 
     # ---------- n_tot and coefficients (µm⁻¹) ----------
     # Particle volume (or mean volume if polydisperse)
-    V  = (4.0 / 3.0) * _np.pi * (D[-1] / 2.0) ** 3  # [µm³]
+    V  = (4.0 / 3.0) * _N_particle.pi * (D[-1] / 2.0) ** 3  # [µm³]
     if size_dist is not None:
-            V = float(_np.sum(size_dist * V))              # ⟨V⟩ [µm³]
+            V = float(_N_particle.sum(size_dist * V))              # ⟨V⟩ [µm³]
 
     # Get scattering and absorption coefficients
     n_tot = fv / V                # [µm⁻³]
@@ -171,34 +171,34 @@ def T_beer_lambert(lam: _Union[float, _np.ndarray],                             
     k_ext = k_sca + k_abs         # [µm⁻¹]
 
     # ---------- Fresnel reflectance/transmittance ----------
-    tfilm = tfilm*1E3 # convert mm to micron units
+    thickness = thickness*1E3 # convert mm to micron units
 
-    theta_rad = _np.radians(theta)
+    theta_rad = aoi
     Rp, Tp = wv.incoh_multilayer(
-        lam,
-        N_layers=[Nh],
-        thickness=tfilm,
+        wavelength,
+        N_layers=[N_host],
+        thickness=thickness,
         aoi=theta_rad,
-        N_above=Nup,
-        N_below=Ndw,
+        N_above=N_above,
+        N_below=N_below,
         polarization='TM',
     )
     Rs, Ts = wv.incoh_multilayer(
-        lam,
-        N_layers=[Nh],
-        thickness=tfilm,
+        wavelength,
+        N_layers=[N_host],
+        thickness=thickness,
         aoi=theta_rad,
-        N_above=Nup,
-        N_below=Ndw,
+        N_above=N_above,
+        N_below=N_below,
         polarization='TE',
     )
     T    = (Ts + Tp)/2
     Rtot = (Rp + Rs)/2
     
-    theta1 = wv.snell(Nup, Nh, theta_rad)
+    theta1 = wv.snell(N_above, N_host, theta_rad)
         
-    Ttot = T*_np.exp(-k_abs*tfilm/_np.cos(theta1.real))
-    Tspec = T*_np.exp(-k_ext*tfilm/_np.cos(theta1.real))
+    Ttot = T*_N_particle.exp(-k_abs*thickness/_N_particle.cos(theta1.real))
+    Tspec = T*_N_particle.exp(-k_ext*thickness/_N_particle.cos(theta1.real))
     Tdif = Ttot - Tspec
 
     # store data into a dataframe (λ index)
@@ -207,60 +207,60 @@ def T_beer_lambert(lam: _Union[float, _np.ndarray],                             
         'Ttot': Ttot,
         'Tspec': Tspec,
         'Tdif': Tdif
-    }, index=lam)
+    }, index=wavelength)
 
     results_df.index.name = 'Wavelength (µm)'
 
     return results_df
 
 @_hide_signature
-def adm_sphere(lam: _Union[float, _np.ndarray],                                     # wavelengths [µm]
-                Nh: _Union[float, _np.ndarray],                                     # host refractive index
-                Np: _Union[float, _np.ndarray, _List[_Union[float, _np.ndarray]]],  # particle refractive index
-                D: _Union[float, _np.ndarray, _List[_Union[float, _np.ndarray]]],   # sphere diameters [µm] 
+def adm_sphere(wavelength: _Union[float, _N_particle.ndarray],                              # wavelengths [µm]
+                N_host: _Union[float, _N_particle.ndarray],                                     # host refractive index
+                N_particle: _Union[float, _N_particle.ndarray, _List[_Union[float, _N_particle.ndarray]]],  # particle refractive index
+                D: _Union[float, _N_particle.ndarray, _List[_Union[float, _N_particle.ndarray]]],   # sphere diameters [µm] 
                 fv: float,                                                          # film volume fraction 
-                tfilm: float,                                                       # film thickness [mm]       
+                thickness: float,                                                       # film thickness [mm]       
                 *,
-                Nup: _Union[float, _np.ndarray] = 1.0,                              # refractive index above
-                Ndw: _Union[float, _np.ndarray] = 1.0,                              # refractive index below
-                size_dist: _np.ndarray = None,                                      # number-fraction weights p_i 
+                N_above: _Union[float, _N_particle.ndarray] = 1.0,                          # refractive index above
+                N_below: _Union[float, _N_particle.ndarray] = 1.0,                          # refractive index below
+                size_dist: _N_particle.ndarray = None,                                      # number-fraction weights p_i 
                 dependent_scatt = False,                                            # use Perkus-Yevik for dependent scattering
-                effective_medium: bool = False,                                     # whether to compute effective Nh via Bruggeman
+                effective_medium: bool = False,                                     # whether to compute effective N_host via Bruggeman
                 use_phase_fun: bool = False,                                        # whether to use phase function instead of g
                 cone_incidence: _Optional[_Tuple[float, float]] = None,             # (theta_min, theta_max) in degrees for diffuse cone incidence
                 lambertian: bool = False                                            # whether to compute Lambertian incidence instead of normal
                 ):
     '''
     Parameters
-    lam : array-like, shape (nλ,)
+    wavelength : array-like, shape (nλ,)
         Wavelengths [µm], strictly positive.
 
-    Nh : float or array-like (nλ,)
-        Host refractive index (can be complex). If array-like, length must equal len(lam).
+    N_host : float or array-like (nλ,)
+        Host refractive index (can be complex). If array-like, length must equal len(wavelength).
 
-    Np (float, 1darray or list): Complex refractive index of each 
-                                            shell layer. Np.shape[1] == len(D). 
+    N_particle (float, 1darray or list): Complex refractive index of each 
+                                            shell layer. N_particle.shape[1] == len(D). 
         Options are:
         float:   solid sphere and constant refractive index
-        1darray: solid sphere and spectral refractive index (len = lam)
+        1darray: solid sphere and spectral refractive index (len = wavelength)
         list:    multilayered sphere (with both constant or spectral refractive indexes)
     
-    D : float, _np.ndarray or list
+    D : float, _N_particle.ndarray or list
         Diameter of the spheres. Use float for monodisperse, or array for polydisperse.
         if multilayer sphere, use list of floats (monodisperse) or arrays (polydisperse).
     
     fv : float
-        Particle volume fraction in (0, 1). Used only to compute an effective medium Nh via
-        `nk.emt_brugg(fv, Np, Nh)`.
+        Particle volume fraction in (0, 1). Used only to compute an effective medium N_host via
+        `nk.emt_brugg(fv, N_particle, N_host)`.
 
-    tfilm : float
+    thickness : float
         Film thickness [mm], ≥ 0.
             
-    Nup : float or array-like, optional
-        Refractive index above the film. Default is 1.0 (air). If array-like, length must equal len(lam).
+    N_above : float or array-like, optional
+        Refractive index above the film. Default is 1.0 (air). If array-like, length must equal len(wavelength).
 
-    Ndw : float or array-like, optional
-        Refractive index below the film. Default is 1.0 (air). If array-like, length must equal len(lam).
+    N_below : float or array-like, optional
+        Refractive index below the film. Default is 1.0 (air). If array-like, length must equal len(wavelength).
 
     size_dist : array-like, shape (n_bins,), optional
         Number-fraction weights for polydisperse particles. Default is None (monodisper
@@ -288,7 +288,7 @@ def adm_sphere(lam: _Union[float, _np.ndarray],                                 
         Whether to compute Lambertian incidence instead of normal incidence
 
     Returns
-    - results_df : pd.DataFrame with index=lam and columns:
+    - results_df : pd.DataFrame with index=wavelength and columns:
                 'Rtot' : total reflectance
                 'Ttot' : total transmittance
                 'Rspec': specular (unscattered) reflectance
@@ -301,45 +301,45 @@ def adm_sphere(lam: _Union[float, _np.ndarray],                                 
                 'Tlam' : transmittance for Lambertian incidence (if requested)
     '''
     # ---------- coerce arrays & basic checks ----------
-    lam, Nh, Np, D, size_dist = _check_mie_inputs(lam, Nh, Np, D, size_dist=size_dist)
+    wavelength, N_host, N_particle, D, size_dist = _check_mie_inputs(wavelength, N_host, N_particle, D, size_dist=size_dist)
 
-    nlam = lam.size
-    Nup = _as_carray(Nup, "Nup", nlam, val_type=complex)
-    Ndw = _as_carray(Ndw, "Ndw", nlam, val_type=complex)
+    n_wavelengths = wavelength.size
+    N_above = _as_carray(N_above, "N_above", n_wavelengths, val_type=complex)
+    N_below = _as_carray(N_below, "N_below", n_wavelengths, val_type=complex)
 
     if not (0 <= float(fv) < 1):
         raise ValueError("fv (volume fraction) must be in [0,1).")
-    if not _np.isscalar(tfilm) or tfilm < 0:
-        raise ValueError("tfilm must be a nonnegative scalar in mm.")
+    if not _N_particle.isscalar(thickness) or thickness < 0:
+        raise ValueError("thickness must be a nonnegative scalar in mm.")
 
-    # if dependent scatt, check that particle is metallic through: Im(Np) > Re(Np)
+    # if dependent scatt, check that particle is metallic through: Im(N_particle) > Re(N_particle)
     # if dependent_scatt:
-    #     if _np.any(_np.array(Np).real < _np.array(Np).imag):
+    #     if _N_particle.any(_N_particle.array(N_particle).real < _N_particle.array(N_particle).imag):
     #         print("Warning: Dependent scattering theory not recommended for metallic particles.")
 
-    # ---------- Effective medium for host (if your convention is to dress Nh) ----------
+    # ---------- Effective medium for host (if your convention is to dress N_host) ----------
     N_layers = len(D)                                    # number of layers in the sphere
     
-    Nh_eff = Nh.copy()
+    N_host_eff = N_host.copy()
     if effective_medium and fv > 0.0:
         # Compute mean diameter of each layer
         D_layers_mean = []
         for i in range(N_layers):
             if size_dist is None:
                 # Monodisperse
-                D_layers_mean.append(float(_np.asarray(D[i]).ravel()[0]))
+                D_layers_mean.append(float(_N_particle.asarray(D[i]).ravel()[0]))
             else:
                 # Polydisperse
-                D_layers_mean.append(_np.average(D[i], axis=0,   # -> float
+                D_layers_mean.append(_N_particle.average(D[i], axis=0,   # -> float
                                             weights=size_dist))  # size_dist shape (n_bins,)
 
         # Compute effective refractive index of host using Bruggeman EMT                                   
-        Np_eff = emt_multilayer_sphere(D_layers_mean, Np, check_inputs=False)
-        Nh_eff = emt_brugg(fv, Np_eff, Nh)
+        N_particle_eff = emt_multilayer_sphere(D_layers_mean, N_particle, check_inputs=False)
+        N_host_eff = emt_brugg(fv, N_particle_eff, N_host)
     
     # ---------- Mie cross sections and phase function ----------
-    theta_eval = _np.linspace(0, _np.pi, 100)
-    cabs, csca, gcos, phase_scatter = mie.cross_section_ensemble(lam, Nh_eff, Np, D, fv, 
+    theta_eval = _N_particle.linspace(0, _N_particle.pi, 100)
+    cabs, csca, gcos, phase_scatter = mie.cross_section_ensemble(wavelength, N_host_eff, N_particle, D, fv, 
                                                                 size_dist=size_dist,
                                                                 theta=theta_eval,
                                                                 check_inputs=False,
@@ -349,9 +349,9 @@ def adm_sphere(lam: _Union[float, _np.ndarray],                                 
 
     # ---------- n_tot and coefficients (µm⁻¹) ----------
     # Particle volume (or mean volume if polydisperse)
-    V  = (4.0 / 3.0) * _np.pi * (D[-1] / 2.0) ** 3  # [µm³]
+    V  = (4.0 / 3.0) * _N_particle.pi * (D[-1] / 2.0) ** 3  # [µm³]
     if size_dist is not None:
-            V = float(_np.sum(size_dist * V))              # ⟨V⟩ [µm³]
+            V = float(_N_particle.sum(size_dist * V))              # ⟨V⟩ [µm³]
 
     # Get scattering and absorption coefficients
     n_tot = fv / V                # [µm⁻³]
@@ -360,29 +360,29 @@ def adm_sphere(lam: _Union[float, _np.ndarray],                                 
 
     # ---------- radiative transfer ----------
     if use_phase_fun:
-        df_results = adm(lam, tfilm, k_sca, k_abs, Nh=Nh_eff, 
+        df_results = adm(wavelength, thickness, k_sca, k_abs, N_host=N_host_eff, 
                                        phase_fun=phase_scatter, 
-                                       Nup=Nup, 
-                                       Ndw=Ndw,
+                                       N_above=N_above, 
+                                       N_below=N_below,
                                        cone_incidence=cone_incidence,
                                        lambertian=lambertian)
     else:
-        df_results = adm(lam, tfilm, k_sca, k_abs, Nh=Nh_eff, 
+        df_results = adm(wavelength, thickness, k_sca, k_abs, N_host=N_host_eff, 
                                        gcos=gcos, 
-                                       Nup=Nup, 
-                                       Ndw=Ndw,
+                                       N_above=N_above, 
+                                       N_below=N_below,
                                        cone_incidence=cone_incidence,
                                        lambertian=lambertian)
 
     return df_results
 
 @_hide_signature
-def adm(lam, tfilm, k_sca, k_abs, Nh,
+def adm(wavelength, thickness, k_sca, k_abs, N_host,
         gcos=None,                                              # optional: asymmetry parameter per λ
         *,
         phase_fun=None,                                         # optional: phase function vs θ (DataFrame only; θ index in degrees 0..180)
-        Nup=1.0,                                                # refractive index above
-        Ndw=1.0,                                                # refractive index below
+        N_above=1.0,                                                # refractive index above
+        N_below=1.0,                                                # refractive index below
         quad_pts: int = 16,                                     # IAD quadrature points when using a tabulated PF
         cone_incidence: _Optional[_Tuple[float, float]] = None, # (theta_min, theta_max) in degrees for diffuse cone incidence
         lambertian: bool = False                                # whether to compute Lambertian incidence instead of normal
@@ -390,28 +390,28 @@ def adm(lam, tfilm, k_sca, k_abs, Nh,
     """
     Adding–doubling (IAD) reflectance/transmittance for a scattering/absorbing film.
 
-    Inputs (arrays are per-wavelength unless noted):
-    - lam      : (nλ,) wavelengths [µm]
-    - tfilm    : scalar film thickness [mm]
+    IN_particleuts (arrays are per-wavelength unless noted):
+    - wavelength : (nλ,) wavelengths [µm]
+    - thickness    : scalar film thickness [mm]
     - k_sca    : (nλ,) scattering coefficient [µm^-1]
     - k_abs    : (nλ,) absorption coefficient [µm^-1]
-    - Nh       : scalar or (nλ,) complex refractive index of the film host
+    - N_host       : scalar or (nλ,) complex refractive index of the film host
     --------------------------------------------------------------------------
     Choose ONE angular description:
     - gcos     : (nλ,) asymmetry parameter  (Henyey–Greenstein style)
       OR
     - phase_fun: pd.DataFrame of the differential *phase function* (not normalized to 1/4π),
                  shape (nθ, nλ). **Index must be θ in degrees from 0 to 180.**
-                 Columns must be the wavelengths (same values as `lam`, order-agnostic).
+                 Columns must be the wavelengths (same values as `wavelength`, order-agnostic).
                  The function will convert θ→μ=cosθ and sort μ ascending in [-1, 1].
     --------------------------------------------------------------------------
-    - Nup, Ndw : scalar or (nλ,) complex refractive indices above/below (defaults=1.0)
+    - N_above, N_below : scalar or (nλ,) complex refractive indices above/below (defaults=1.0)
     - quad_pts : quadrature points for IAD when using a tabulated phase function
     - cone_incidence : optional tuple (theta_min, theta_max) in degrees for
                        diffuse cone incidence calculations
 
     Returns:
-    - results_df : pd.DataFrame with index=lam and columns:
+    - results_df : pd.DataFrame with index=wavelength and columns:
                 'Rtot' : total reflectance
                 'Ttot' : total transmittance
                 'Rspec': specular (unscattered) reflectance
@@ -424,35 +424,35 @@ def adm(lam, tfilm, k_sca, k_abs, Nh,
                 'Tlam' : transmittance for Lambertian incidence (if requested)
     """
     # ---------- coerce arrays ----------
-    lam   = _np.atleast_1d(_np.asarray(lam,   float))
-    k_sca = _np.atleast_1d(_np.asarray(k_sca, float))
-    k_abs = _np.atleast_1d(_np.asarray(k_abs, float))
+    wavelength = _N_particle.atleast_1d(_N_particle.asarray(wavelength, float))
+    k_sca = _N_particle.atleast_1d(_N_particle.asarray(k_sca, float))
+    k_abs = _N_particle.atleast_1d(_N_particle.asarray(k_abs, float))
 
-    if lam.ndim != 1:
-        raise ValueError("lam must be a 1D array of wavelengths [µm].")
-    nlam = lam.size
+    if wavelength.ndim != 1:
+        raise ValueError("wavelength must be a 1D array of wavelengths [µm].")
+    n_wavelengths = wavelength.size
     for name, arr in [("k_sca", k_sca), ("k_abs", k_abs)]:
-        if _np.asarray(arr).shape != (nlam,):
-            raise ValueError(f"{name} must have the same length as lam.")
+        if _N_particle.asarray(arr).shape != (n_wavelengths,):
+            raise ValueError(f"{name} must have the same length as wavelength.")
 
-    Nh_arr  = _as_carray(Nh,  "Nh" , nlam, val_type=complex)
-    Nup_arr = _as_carray(Nup, "Nup", nlam, val_type=complex)
-    Ndw_arr = _as_carray(Ndw, "Ndw", nlam, val_type=complex)
+    N_host_arr  = _as_carray(N_host,  "N_host" , n_wavelengths, val_type=complex)
+    N_above_arr = _as_carray(N_above, "N_above", n_wavelengths, val_type=complex)
+    N_below_arr = _as_carray(N_below, "N_below", n_wavelengths, val_type=complex)
 
     # keep all positive
-    k_sca = _np.maximum(k_sca, 0.0)
-    k_abs = _np.maximum(k_abs, 0.0)
-    Nh_arr.imag = _np.maximum(Nh_arr.imag, 0.0)
+    k_sca = _N_particle.maximum(k_sca, 0.0)
+    k_abs = _N_particle.maximum(k_abs, 0.0)
+    N_host_arr.imag = _N_particle.maximum(N_host_arr.imag, 0.0)
 
     # ---------- convert to IAD units (mm^-1); include host absorption via Im(n) ----------
     # k_sca, k_abs are in µm^-1 -> mm^-1 multiply by 1e3
     mu_s = k_sca * 1e3
 
     # host material absorption: α_host = 4π k / λ  (λ in µm)  -> in mm^-1 multiply by 1e3
-    kz_imag = 2.0 * _np.pi / lam * Nh_arr.imag * 1e3  # (2π/λ)*k in mm^-1
+    kz_imag = 2.0 * _N_particle.pi / wavelength * N_host_arr.imag * 1e3  # (2π/λ)*k in mm^-1
     mu_a = k_abs * 1e3 + 2.0 * kz_imag                # = (k_abs + 2*(2π/λ)k)*1e3 = (k_abs + 4πk/λ)*1e3
     mu_t = mu_s + mu_a
-    d = float(tfilm)
+    d = float(thickness)
 
     # ---------- choose angular description ----------
     use_pf = phase_fun is not None
@@ -462,9 +462,9 @@ def adm(lam, tfilm, k_sca, k_abs, Nh,
         raise ValueError("You must provide gcos (per λ) or a tabulated phase_fun.")
 
     if not use_pf:
-        gcos = _np.atleast_1d(_np.asarray(gcos, float))
-        if gcos.shape != (nlam,):
-            raise ValueError("gcos must have shape (len(lam),).")
+        gcos = _N_particle.atleast_1d(_N_particle.asarray(gcos, float))
+        if gcos.shape != (n_wavelengths,):
+            raise ValueError("gcos must have shape (len(wavelength),).")
 
     # ---------- prepare phase function (TABULATED path) ----------
     if use_pf:
@@ -472,30 +472,30 @@ def adm(lam, tfilm, k_sca, k_abs, Nh,
             raise TypeError("phase_fun must be a pandas DataFrame with θ-degree index in [0,180].")
 
         # Validate θ index: must be degrees from 0 to 180
-        theta_idx = _np.asarray(phase_fun.index, float)
+        theta_idx = _N_particle.asarray(phase_fun.index, float)
         if theta_idx.ndim != 1:
             raise ValueError("phase_fun index must be 1D θ (degrees).")
         if theta_idx.min() < 0.0 or theta_idx.max() > 180.0:
             raise ValueError("phase_fun index (θ) must lie within [0°, 180°].")
 
-        # Align columns to lam (order-agnostic but values must match)
+        # Align columns to wavelength (order-agnostic but values must match)
         try:
-            # If columns are numeric wavelengths, reindex to lam exactly (no interpolation here)
-            PF = phase_fun.reindex(columns=lam, copy=False).values
+            # If columns are numeric wavelengths, reindex to wavelength exactly (no interpolation here)
+            PF = phase_fun.reindex(columns=wavelength, copy=False).values
         except Exception as e:
-            raise ValueError("phase_fun columns must match lam (wavelengths).") from e
-        if PF.shape != (theta_idx.size, nlam):
-            raise ValueError("phase_fun must have shape (nθ, nλ) matching lam.")
+            raise ValueError("phase_fun columns must match wavelength.") from e
+        if PF.shape != (theta_idx.size, n_wavelengths):
+            raise ValueError("phase_fun must have shape (nθ, nλ) matching wavelength.")
 
         if _IAD_SUPPORTS_TABULATED_PF:
             # Convert θ → μ and sort ascending in [-1, 1]
-            mu = _np.cos(_np.radians(theta_idx))
-            order = _np.argsort(mu)    # ascending
+            mu = _N_particle.cos(_N_particle.radians(theta_idx))
+            order = _N_particle.argsort(mu)    # ascending
             mu = mu[order]
             PF = PF[order, :]
 
             # IAD expects a DataFrame with index μ in [-1,1], one column per λ
-            pf_df = pd.DataFrame(PF, index=mu, columns=lam)
+            pf_df = pd.DataFrame(PF, index=mu, columns=wavelength)
             pf_df.index.name = "cos(theta)"
         else:
             # Older iadpython releases only expose Henyey-Greenstein anisotropy.
@@ -505,24 +505,24 @@ def adm(lam, tfilm, k_sca, k_abs, Nh,
             use_pf = False
 
     # ---------- run IAD per wavelength ----------
-    Ttot  = _np.zeros(nlam, float)
-    Rtot  = _np.zeros(nlam, float)
-    Tspec = _np.zeros(nlam, float)
-    Rspec = _np.zeros(nlam, float)
+    Ttot  = _N_particle.zeros(n_wavelengths, float)
+    Rtot  = _N_particle.zeros(n_wavelengths, float)
+    Tspec = _N_particle.zeros(n_wavelengths, float)
+    Rspec = _N_particle.zeros(n_wavelengths, float)
 
     if cone_incidence is not None:
-        Tcone = _np.zeros(nlam, float)
-        Rcone = _np.zeros(nlam, float)
+        Tcone = _N_particle.zeros(n_wavelengths, float)
+        Rcone = _N_particle.zeros(n_wavelengths, float)
 
     if lambertian:
-        Rlam = _np.zeros(nlam, float)
-        Tlam = _np.zeros(nlam, float)
+        Rlam = _N_particle.zeros(n_wavelengths, float)
+        Tlam = _N_particle.zeros(n_wavelengths, float)
 
-    for j in range(nlam):
+    for j in range(n_wavelengths):
         # guard: IAD wants n >= 1
-        n_real = float(max(Nh_arr.real[j], 1.0))
-        n_up   = float(max(Nup_arr.real[j], 1.0))
-        n_dw   = float(max(Ndw_arr.real[j], 1.0))
+        n_real = float(max(N_host_arr.real[j], 1.0))
+        n_up   = float(max(N_above_arr.real[j], 1.0))
+        n_dw   = float(max(N_below_arr.real[j], 1.0))
 
         if mu_t[j] <= 0.0:
             # transparent, non-scattering layer -> Fresnel only
@@ -561,8 +561,8 @@ def adm(lam, tfilm, k_sca, k_abs, Nh,
             theta_min, theta_max = cone_incidence
 
             # get equivalent nu = cos(theta)
-            nu_min = _np.cos(_np.radians(theta_max))  
-            nu_max = _np.cos(_np.radians(theta_min))
+            nu_min = _N_particle.cos(_N_particle.radians(theta_max))  
+            nu_max = _N_particle.cos(_N_particle.radians(theta_min))
 
             # compute diffuse cone incidence
             R_cone, T_cone = s.rt_diffuse_cone(R, T, nu_min, nu_max)
@@ -581,7 +581,7 @@ def adm(lam, tfilm, k_sca, k_abs, Nh,
         "Tspec": Tspec,
         "Rdif": Rdif,
         "Tdif": Tdif
-    }, index=lam)
+    }, index=wavelength)
 
     results_df.index.name = 'Wavelength (µm)'
 

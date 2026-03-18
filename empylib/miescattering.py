@@ -307,7 +307,7 @@ def _cross_section_at_lam(m,x,nmax = None):
     return Qext, Qsca, Asym, Qb, Qf
 
 def _normalize_single_particle_inputs(
-    lam: _Union[float, _np.ndarray],
+    wavelength: _Union[float, _np.ndarray],
     Nh: _Union[float, _np.ndarray],
     Np: _Union[float, _np.ndarray, _List[_Union[float, _np.ndarray]]],
     D: _Union[float, _np.ndarray, _List[_Union[float, _np.ndarray]]],
@@ -320,7 +320,7 @@ def _normalize_single_particle_inputs(
 
     Returns
     -------
-    lam : ndarray, shape (nlam,)
+    wavelength : ndarray, shape (nlam,)
     Nh : ndarray, shape (nlam,)
     Np : ndarray, shape (n_layers, nlam)
     D_layers : list[ndarray]
@@ -329,18 +329,18 @@ def _normalize_single_particle_inputs(
         One scalar diameter per shell. Polydisperse inputs are rejected here.
     """
     if check_inputs:
-        lam, Nh, Np, D, _ = _check_mie_inputs(lam, Nh, Np, D)
+        wavelength, Nh, Np, D, _ = _check_mie_inputs(wavelength, Nh, Np, D)
 
-    lam = _np.atleast_1d(_np.asarray(lam, dtype=float))
-    if lam.ndim != 1 or lam.size == 0:
-        raise ValueError("lam must be a non-empty 1D array.")
+    wavelength = _np.atleast_1d(_np.asarray(wavelength, dtype=float))
+    if wavelength.ndim != 1 or wavelength.size == 0:
+        raise ValueError("wavelength must be a non-empty 1D array.")
 
-    Nh = _as_carray(Nh, "Nh", lam.size, val_type=complex)
+    Nh = _as_carray(Nh, "Nh", wavelength.size, val_type=complex)
     Np = _np.asarray(Np, dtype=complex)
     if Np.ndim == 1:
         Np = Np.reshape(1, -1)
-    if Np.ndim != 2 or Np.shape[1] != lam.size:
-        raise ValueError("Np must resolve to shape (n_layers, len(lam)).")
+    if Np.ndim != 2 or Np.shape[1] != wavelength.size:
+        raise ValueError("Np must resolve to shape (n_layers, len(wavelength)).")
 
     if _np.isscalar(D):
         D_layers = [_np.array([float(D)], dtype=float)]
@@ -366,10 +366,10 @@ def _normalize_single_particle_inputs(
         )
 
     D_shells = _np.asarray([float(layer[0]) for layer in D_layers], dtype=float)
-    return lam, Nh, Np, D_layers, D_shells
+    return wavelength, Nh, Np, D_layers, D_shells
 
 @_hide_signature
-def scatter_efficiency(lam: _Union[float, _np.ndarray],
+def scatter_efficiency(wavelength: _Union[float, _np.ndarray],
                        Nh: _Union[float, _np.ndarray],
                        Np: _Union[float, _np.ndarray],
                        D: _Union[float, _np.ndarray],
@@ -383,18 +383,18 @@ def scatter_efficiency(lam: _Union[float, _np.ndarray],
 
     Parameters
     ----------
-    lam : ndarray or float
+    wavelength : ndarray or float
         wavelength (microns)
 
     Nh : ndarray or float
         Complex refractive index of host. If ndarray, its size must be equal to
-        len(lam)
+        len(wavelength)
         
     Np : float, 1darray or list
         Complex refractive index of each shell layer. The number of elements
         must be equal to len(D). Options are:
             float:   solid sphere and constant refractive index
-            1darray: solid sphere and spectral refractive index (length must match that of lam)
+            1darray: solid sphere and spectral refractive index (length must match that of wavelength)
             list:    multilayered sphere (with both constant or spectral refractive indexes)
         
     D : float or list
@@ -416,20 +416,20 @@ def scatter_efficiency(lam: _Union[float, _np.ndarray],
     gcos : ndarray
         Asymmetry parameter
     '''
-    lam, Nh, Np, _, D_shells = _normalize_single_particle_inputs(
-        lam, Nh, Np, D, check_inputs=check_inputs
+    wavelength, Nh, Np, _, D_shells = _normalize_single_particle_inputs(
+        wavelength, Nh, Np, D, check_inputs=check_inputs
     )
 
     m = (Np / Nh.real).transpose()
     R = D_shells / 2.0
-    kh = 2 * pi * Nh.real / lam
+    kh = 2 * pi * Nh.real / wavelength
     x = _np.outer(kh, R)
     
     # Preallocate outputs
-    qext = _np.zeros_like(lam, dtype=float)
-    qsca = _np.zeros_like(lam, dtype=float)
-    gcos = _np.zeros_like(lam, dtype=float)
-    for i in range(len(lam)):
+    qext = _np.zeros_like(wavelength, dtype=float)
+    qsca = _np.zeros_like(wavelength, dtype=float)
+    gcos = _np.zeros_like(wavelength, dtype=float)
+    for i in range(len(wavelength)):
         qext[i], qsca[i], gcos[i], *_ = _cross_section_at_lam(m[i, :], x[i, :], nmax)
 
     # outputs: qabs, qsca, gcos
@@ -437,7 +437,7 @@ def scatter_efficiency(lam: _Union[float, _np.ndarray],
     return qabs, qsca, gcos
 
 @_hide_signature
-def scatter_coefficients(lam: _Union[float, _np.ndarray],
+def scatter_coefficients(wavelength: _Union[float, _np.ndarray],
                          Nh: _Union[float, _np.ndarray],
                          Np: _Union[float, _np.ndarray, _List[_Union[float, _np.ndarray]]],
                          D: _Union[float, _np.ndarray],
@@ -451,18 +451,18 @@ def scatter_coefficients(lam: _Union[float, _np.ndarray],
 
     Parameters
     ----------
-    lam : ndarray or float
+    wavelength : ndarray or float
         wavelengtgh (microns)
         
     Nh : ndarray or float
         Complex refractive index of host. If ndarray, its size must be equal to
-        len(lam)
+        len(wavelength)
         
     Np : float, 1darray or list
         Complex refractive index of each shell layer. The number of elements
         must be equal to len(D). Options are:
             float:   solid sphere and constant refractive index
-            1darray: solid sphere and spectral refractive index (length must match that of lam)
+            1darray: solid sphere and spectral refractive index (length must match that of wavelength)
             list:    multilayered sphere (with both constant or spectral refractive indexes)
         
     D : float or list
@@ -480,13 +480,13 @@ def scatter_coefficients(lam: _Union[float, _np.ndarray],
     bn : ndarray
         Scattering coefficient N function
     '''
-    lam, Nh, Np, _, D_shells = _normalize_single_particle_inputs(
-        lam, Nh, Np, D, check_inputs=check_inputs
+    wavelength, Nh, Np, _, D_shells = _normalize_single_particle_inputs(
+        wavelength, Nh, Np, D, check_inputs=check_inputs
     )
 
     m = (Np / Nh.real).transpose()
     R = D_shells / 2.0
-    kh = 2 * pi * Nh.real / lam
+    kh = 2 * pi * Nh.real / wavelength
     x = _np.outer(kh, R)
 
     # determine nmax 
@@ -496,9 +496,9 @@ def scatter_coefficients(lam: _Union[float, _np.ndarray],
         nmax = int(_np.round(_np.abs(y) + 4*_np.abs(y)**(1/3) + 2))
 
     # Preallocate outputs
-    an = _np.zeros((len(lam), nmax), dtype=complex)
-    bn = _np.zeros((len(lam), nmax), dtype=complex)
-    for i in range(len(lam)):
+    an = _np.zeros((len(wavelength), nmax), dtype=complex)
+    bn = _np.zeros((len(wavelength), nmax), dtype=complex)
+    for i in range(len(wavelength)):
         an[i,:], bn[i, :], *_ = _get_coated_coefficients(m[i, :], x[i, :], nmax)
     
     return an.reshape(-1, nmax), bn.reshape(-1, nmax)
@@ -537,7 +537,7 @@ def _pi_tau_1n(theta, nmax):
     return pi, tau
 
 @_hide_signature
-def scatter_amplitude(lam: _Union[float, _np.ndarray], 
+def scatter_amplitude(wavelength: _Union[float, _np.ndarray], 
                       Nh: _Union[float, _np.ndarray], 
                       Np: _Union[float, _np.ndarray, _List[_Union[float, _np.ndarray]]],  
                       D: _Union[float, _List[float]],
@@ -557,17 +557,17 @@ def scatter_amplitude(lam: _Union[float, _np.ndarray],
     Modifications by: Francisco Ramírez (2025)
 
     Parameters:
-        lam (ndarray or float): wavelengtgh (microns)
+        wavelength (ndarray or float): wavelengtgh (microns)
         
         Nh (ndarray or float): Complex refractive index of host. If 
-                                   ndarray, len = lam
+                                   ndarray, len = wavelength
         
         Np (float, 1darray or list): Complex refractive index of each 
                                             shell layer. The number of elements 
                                             must be equal to len(D). 
             Options are:
             float:   solid sphere and constant refractive index
-            1darray: solid sphere and spectral refractive index (len = lam)
+            1darray: solid sphere and spectral refractive index (len = wavelength)
             list:    multilayered sphere (with both constant or spectral refractive indexes)
         
         D (float or list): Outter diameter of each shell's layer (microns). 
@@ -586,13 +586,13 @@ def scatter_amplitude(lam: _Union[float, _np.ndarray],
     """
     # first check inputs and arrange them in np arrays
     if check_inputs:
-        lam, Nh, Np, D, _ = _check_mie_inputs(lam, Nh, Np, D)
+        wavelength, Nh, Np, D, _ = _check_mie_inputs(wavelength, Nh, Np, D)
     
     # checks variable theta
     theta = _check_theta(theta)
 
     # Extract mie scattering coefficients
-    an, bn = scatter_coefficients(lam, Nh, Np, D, 
+    an, bn = scatter_coefficients(wavelength, Nh, Np, D, 
                                 nmax=nmax, 
                                 check_inputs=False)
     nmax = an.shape[1]
@@ -607,8 +607,8 @@ def scatter_amplitude(lam: _Union[float, _np.ndarray],
     mu = _np.cos(theta)
 
     # compute S1 and S2
-    S1 = _np.zeros((len(mu), len(lam)), dtype=_np.complex128)
-    S2 = _np.zeros((len(mu), len(lam)), dtype=_np.complex128)
+    S1 = _np.zeros((len(mu), len(wavelength)), dtype=_np.complex128)
+    S2 = _np.zeros((len(mu), len(wavelength)), dtype=_np.complex128)
     for k in range(len(mu)):
         S1[k] = _np.dot(scale* pi[:,k],an.T) + _np.dot(scale*tau[:,k],bn.T)
         S2[k] = _np.dot(scale*tau[:,k],an.T) + _np.dot(scale* pi[:,k],bn.T)
@@ -616,7 +616,7 @@ def scatter_amplitude(lam: _Union[float, _np.ndarray],
     return S1, S2
 
 @_hide_signature
-def scatter_stokes(lam: _Union[float, _np.ndarray], 
+def scatter_stokes(wavelength: _Union[float, _np.ndarray], 
                    Nh: _Union[float, _np.ndarray], 
                    Np: _Union[float, _np.ndarray, _List[_Union[float, _np.ndarray]]],
                    D: _Union[float, _List[float]],
@@ -630,16 +630,16 @@ def scatter_stokes(lam: _Union[float, _np.ndarray],
     Parameters:
         theta (ndarray or float): Scattering angle (radians)
 
-        lam (ndarray or float): wavelengtgh (microns)
+        wavelength (ndarray or float): wavelengtgh (microns)
         
         Nh (ndarray or float): Complex refractive index of host. If 
-                                   ndarray, len(Nh) == len(lam)
+                                   ndarray, len(Nh) == len(wavelength)
 
         Np (float, 1darray or list): Complex refractive index of each 
                                             shell layer. Np.shape[1] == len(D). 
             Options are:
             float:   solid sphere and constant refractive index
-            1darray: solid sphere and spectral refractive index (len = lam)
+            1darray: solid sphere and spectral refractive index (len = wavelength)
             list:    multilayered sphere (with both constant or spectral refractive indexes)
         
         D (float or list): Outter diameter of each shell's layer (microns). 
@@ -658,13 +658,13 @@ def scatter_stokes(lam: _Union[float, _np.ndarray],
 
     # Organize D format
     if check_inputs:
-        lam, Nh, Np, D, _ = _check_mie_inputs(lam,Nh, Np, D)
+        wavelength, Nh, Np, D, _ = _check_mie_inputs(wavelength, Nh, Np, D)
     
     # checks variable theta
     theta = _check_theta(theta)
     
     # Get scattering amplitude elements S1 and S2
-    s1, s2 = scatter_amplitude(lam, Nh, Np, D,
+    s1, s2 = scatter_amplitude(wavelength, Nh, Np, D,
                                theta=theta,
                                nmax=nmax,
                                check_inputs=False)
@@ -677,7 +677,7 @@ def scatter_stokes(lam: _Union[float, _np.ndarray],
 
     return S11, S12, S33, S34
 
-def _phase_function_single(lam: _Union[float, _np.ndarray], 
+def _phase_function_single(wavelength: _Union[float, _np.ndarray], 
                             Nh: _Union[float, _np.ndarray], 
                             Np: _Union[float, _np.ndarray, _List[_Union[float, _np.ndarray]]],
                             D: _Union[float, _List[float]],
@@ -697,16 +697,16 @@ def _phase_function_single(lam: _Union[float, _np.ndarray],
     Parameters:
         theta (ndarray or float): Scattering angle (radians)
 
-        lam (ndarray or float): wavelengtgh (microns)
+        wavelength (ndarray or float): wavelengtgh (microns)
         
         Nh (ndarray or float): Complex refractive index of host. If 
-                                   ndarray, len(Nh) == len(lam)
+                                   ndarray, len(Nh) == len(wavelength)
 
         Np (float, 1darray or list): Complex refractive index of each 
                                             shell layer. Np.shape[1] == len(D). 
             Options are:
             float:   solid sphere and constant refractive index
-            1darray: solid sphere and spectral refractive index (len = lam)
+            1darray: solid sphere and spectral refractive index (len = wavelength)
             list:    multilayered sphere (with both constant or spectral refractive indexes)
         
         D (float or list): Outter diameter of each shell's layer (microns). 
@@ -723,21 +723,21 @@ def _phase_function_single(lam: _Union[float, _np.ndarray],
         phase_fun: the scattering phase function (as pd.DataFrame or ndarray)
     """
     # Organize D format
-    lam, Nh, Np, _, D_shells = _normalize_single_particle_inputs(
-        lam, Nh, Np, D, check_inputs=check_inputs
+    wavelength, Nh, Np, _, D_shells = _normalize_single_particle_inputs(
+        wavelength, Nh, Np, D, check_inputs=check_inputs
     )
     
     # checks variable theta
     theta = _check_theta(theta)
     
     # Get scattering amplitude elements S1 and S2
-    s1, s2 = scatter_amplitude(lam, Nh, Np, D, 
+    s1, s2 = scatter_amplitude(wavelength, Nh, Np, D, 
                                theta=theta, 
                                nmax=nmax, 
                                check_inputs = False)
 
     # Scale factor
-    x = _np.pi * Nh.real * D_shells[-1] / lam
+    x = _np.pi * Nh.real * D_shells[-1] / wavelength
     scale_factor = _np.pi*x**2
 
     # Compute phase function
@@ -750,12 +750,12 @@ def _phase_function_single(lam: _Union[float, _np.ndarray],
     df_phase_fun = _pd.DataFrame(data=phase_fun, 
                                  index=_pd.Index(_np.degrees(theta), 
                                                  name='Theta (deg)'), 
-                                 columns=lam)
+                                 columns=wavelength)
 
     return df_phase_fun
 
 @_hide_signature
-def phase_scatt_HG(lam: _Union[float, _np.ndarray], 
+def phase_scatt_HG(wavelength: _Union[float, _np.ndarray], 
                    gcos: _Union[float, _np.ndarray], 
                    qsca: _Union[float, _np.ndarray] = 1,
                    *,
@@ -765,7 +765,7 @@ def phase_scatt_HG(lam: _Union[float, _np.ndarray],
     Compute the Heyney-Greenstein phase function
 
     Parameters
-        lam : ndarray or float
+        wavelength : ndarray or float
             wavelengtgh (microns)
 
         gcos : float or ndarray
@@ -786,12 +786,12 @@ def phase_scatt_HG(lam: _Union[float, _np.ndarray],
         p_theta_HG: float or ndarray
             Phase function
     """
-    lam = _np.atleast_1d(_np.asarray(lam, dtype=float))
-    if lam.ndim != 1 or lam.size == 0:
-        raise ValueError("lam must be a non-empty 1D array.")
+    wavelength = _np.atleast_1d(_np.asarray(wavelength, dtype=float))
+    if wavelength.ndim != 1 or wavelength.size == 0:
+        raise ValueError("wavelength must be a non-empty 1D array.")
 
-    gcos = _as_carray(gcos, "gcos", lam.size, val_type=float)
-    qsca = _as_carray(qsca, "qsca", lam.size, val_type=float)
+    gcos = _as_carray(gcos, "gcos", wavelength.size, val_type=float)
+    qsca = _as_carray(qsca, "qsca", wavelength.size, val_type=float)
     theta = _check_theta(theta)
 
     gg, tt = _np.meshgrid(gcos, theta)
@@ -807,7 +807,7 @@ def phase_scatt_HG(lam: _Union[float, _np.ndarray],
     df_phase_fun = _pd.DataFrame(data=p_theta_HG, 
                                 index=_pd.Index(_np.degrees(theta), 
                                                 name='Theta (deg)'), 
-                                columns=lam,)
+                                columns=wavelength,)
 
     return df_phase_fun
     
@@ -1043,7 +1043,7 @@ def _poly_percus_yevick(fv, qq, D, nD):
     return S_q
 
 @_hide_signature
-def structure_factor_PY(lam: _Union[float, _np.ndarray], 
+def structure_factor_PY(wavelength: _Union[float, _np.ndarray], 
                         Nh: _Union[float, _np.ndarray], 
                         D: _Union[float, _np.ndarray, _List[_Union[float, _np.ndarray]]], 
                         fv: float,
@@ -1057,11 +1057,11 @@ def structure_factor_PY(lam: _Union[float, _np.ndarray],
 
     Parameters:
     -----------
-    lam : ndarray or float
+    wavelength : ndarray or float
         Wavelengtgh (microns)
     
     Nh : ndarray or float
-        Complex refractive index of host. If ndarray, len(Nh) == len(lam)
+        Complex refractive index of host. If ndarray, len(Nh) == len(wavelength)
     
     D : float or ndarray
         Diameter of the spheres. Use float for monodisperse, or array for polydisperse.
@@ -1092,11 +1092,11 @@ def structure_factor_PY(lam: _Union[float, _np.ndarray],
     if isinstance(theta, float): theta = _np.array([theta])
     
     if check_inputs:
-        lam, Nh, _, D, size_dist = _check_mie_inputs(lam, Nh, D = D, 
+        wavelength, Nh, _, D, size_dist = _check_mie_inputs(wavelength, Nh, D = D, 
                                                      size_dist = size_dist)
 
     # compute scattering vector (q = 2k0*sin(theta/2))
-    k0 = 2*_np.pi*Nh.real/lam
+    k0 = 2*_np.pi*Nh.real/wavelength
     q = _np.outer(2*k0, _np.sin(theta/2))
 
     q[q < 0.1] = 0.1  # Found overflow for q < 0.1
@@ -1110,7 +1110,7 @@ def structure_factor_PY(lam: _Union[float, _np.ndarray],
     return S_q
 
 @_hide_signature
-def phase_scatt_ensemble(lam: _Union[float, _np.ndarray],
+def phase_scatt_ensemble(wavelength: _Union[float, _np.ndarray],
                         Nh: _Union[float, _np.ndarray],
                         Np: _Union[float, _np.ndarray, _List[_Union[float, _np.ndarray]]],
                         D: _Union[float, _np.ndarray, _List[_Union[float, _np.ndarray]]],
@@ -1128,17 +1128,17 @@ def phase_scatt_ensemble(lam: _Union[float, _np.ndarray],
     The intensity is normalized such that the integral is equal to qsca
 
     Parameters:
-        lam : ndarray or float 
+        wavelength : ndarray or float 
             Wavelengtgh (microns)
         
         Nh : ndarray or float 
-            Complex refractive index of host. If ndarray, len(Nh) == len(lam)
+            Complex refractive index of host. If ndarray, len(Nh) == len(wavelength)
 
         Np (float, 1darray or list): Complex refractive index of each 
                                             shell layer. Np.shape[1] == len(D). 
             Options are:
             float:   solid sphere and constant refractive index
-            1darray: solid sphere and spectral refractive index (len = lam)
+            1darray: solid sphere and spectral refractive index (len = wavelength)
             list:    multilayered sphere (with both constant or spectral refractive indexes)
         
         D : float, _np.ndarray or list
@@ -1176,7 +1176,7 @@ def phase_scatt_ensemble(lam: _Union[float, _np.ndarray],
     """
     # Input checks
     if check_inputs:
-            lam, Nh, Np, D, size_dist = _check_mie_inputs(lam, Nh, Np, D,
+            wavelength, Nh, Np, D, size_dist = _check_mie_inputs(wavelength, Nh, Np, D,
                                                          size_dist=size_dist)
     
     # asses if fv is within 0 and 1
@@ -1205,7 +1205,7 @@ def phase_scatt_ensemble(lam: _Union[float, _np.ndarray],
     # Get form factor
     if size_dist is None:
         # Monodisperse
-        phase_fun = _phase_function_single(lam, Nh, Np, D,
+        phase_fun = _phase_function_single(wavelength, Nh, Np, D,
                                          theta=theta, 
                                          nmax=nmax, 
                                          as_ndarray=True, 
@@ -1214,11 +1214,11 @@ def phase_scatt_ensemble(lam: _Union[float, _np.ndarray],
         Ac = _np.pi*(D[-1]/2)**2  # cross-sectional area of each sphere
 
         # Polydisperse: ensemble average over diameter distribution
-        phase_fun = _np.zeros((len(theta), len(lam)), dtype=float)
+        phase_fun = _np.zeros((len(theta), len(wavelength)), dtype=float)
         for i in range(len(size_dist)):
             Di = [d[i] for d in D]  # diameter of each layer for current size bin
             # For each diameter, compute phase function
-            phase_fun += size_dist[i] * Ac[i] * _phase_function_single(lam, Nh, Np, Di,
+            phase_fun += size_dist[i] * Ac[i] * _phase_function_single(wavelength, Nh, Np, Di,
                                                                      theta=theta, 
                                                                      nmax=nmax, 
                                                                      as_ndarray=True, 
@@ -1229,7 +1229,7 @@ def phase_scatt_ensemble(lam: _Union[float, _np.ndarray],
 
     if dependent_scatt:
         # Get structure factor
-        S_q = structure_factor_PY(lam, Nh, D, fv, 
+        S_q = structure_factor_PY(wavelength, Nh, D, fv, 
                                 theta=theta,
                                 size_dist=size_dist, 
                                 check_inputs=False)
@@ -1243,13 +1243,13 @@ def phase_scatt_ensemble(lam: _Union[float, _np.ndarray],
     # if not convert phase function to dataframe
     df_phase_fun = _pd.DataFrame(data=phase_fun, 
                                  index=_np.degrees(theta), 
-                                 columns=lam)
+                                 columns=wavelength)
 
     return df_phase_fun
 
 @_hide_signature
 def cross_section_ensemble(
-    lam: _Union[float, _np.ndarray], 
+    wavelength: _Union[float, _np.ndarray], 
     Nh: _Union[float, _np.ndarray], 
     Np: _Union[float, _np.ndarray, _List[_Union[float, _np.ndarray]]],
     D: _Union[float, _np.ndarray, _List[_Union[float, _np.ndarray]]],
@@ -1271,17 +1271,17 @@ def cross_section_ensemble(
 
     Parameters
     ----------
-    lam : array-like, shape (nλ,)
+    wavelength : array-like, shape (nλ,)
         Wavelengths [µm], strictly positive.
 
     Nh : float or array-like (nλ,)
-        Host refractive index (can be complex). If array-like, length must equal len(lam).
+        Host refractive index (can be complex). If array-like, length must equal len(wavelength).
 
     Np : float, 1darray or list 
         Complex refractive index of each shell layer. Np.shape[1] == len(D). 
         Options are:
         - float:   solid sphere and constant refractive index
-        - 1darray: solid sphere and spectral refractive index (len = lam)
+        - 1darray: solid sphere and spectral refractive index (len = wavelength)
         - list:    multilayered sphere (with both constant or spectral refractive indexes)
     
     D : float, _np.ndarray or list
@@ -1332,7 +1332,7 @@ def cross_section_ensemble(
     """
     # Input checks
     if check_inputs:
-            lam, Nh, Np, D, size_dist = _check_mie_inputs(lam, Nh, Np, D,
+            wavelength, Nh, Np, D, size_dist = _check_mie_inputs(wavelength, Nh, Np, D,
                                                          size_dist=size_dist)
 
     # checks variable theta
@@ -1364,14 +1364,14 @@ def cross_section_ensemble(
     p = _np.asarray([1.0]) if size_dist is None else size_dist  # probability for each size bin
 
     # ---------- Absorption: average q_abs * area ----------
-    cabs_av = _np.zeros_like(lam, dtype=float)
-    csca_av = _np.zeros_like(lam, dtype=float)
-    gcos_av = _np.zeros_like(lam, dtype=float)
+    cabs_av = _np.zeros_like(wavelength, dtype=float)
+    csca_av = _np.zeros_like(wavelength, dtype=float)
+    gcos_av = _np.zeros_like(wavelength, dtype=float)
     for i in range(n_bins):
         Di = [d[i] for d in D]           # diameter of each layer for current size bin
 
         # mie.scatter_efficiency must return arrays shaped (nλ,)
-        qabs, qsca, gcos = scatter_efficiency(lam, Nh, Np, Di, 
+        qabs, qsca, gcos = scatter_efficiency(wavelength, Nh, Np, Di, 
                                               nmax = nmax,
                                               check_inputs = False)
 
@@ -1387,7 +1387,7 @@ def cross_section_ensemble(
 
     # ---------- Scattering and g: via dense phase function integration ----------
     # phase_scatt_ensemble should return a DataFrame with index=θ° and columns=λ (your earlier design)
-    phase_fun_df = phase_scatt_ensemble(lam, Nh, Np, D, fv,
+    phase_fun_df = phase_scatt_ensemble(wavelength, Nh, Np, D, fv,
                                         size_dist=size_dist, 
                                         theta=theta,
                                         nmax=nmax,

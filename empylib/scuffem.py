@@ -15,12 +15,12 @@ import pandas as pd
 from .utils import detect_spectral_spikes as _detect_spectral_spikes
 
 
-def make_spectral_files(lam, Material=None):
+def make_spectral_files(wavelength, Material=None):
     """
     Create OmegaList and dielectric properties files for scuff-EM simulations.
 
     Input:
-        lam: Wavelength range (um)
+        wavelength: Wavelength range (um)
         Material: dictionary with:
             keys: materials name for .dat file
             values: nk data in ndarray (dtype=complex)
@@ -33,22 +33,22 @@ def make_spectral_files(lam, Material=None):
         raise ValueError("Material variable must be a dictionary")
 
     with open("OmegaList.dat", "w") as f:
-        for iw in range(len(lam)):
-            f.write(f"{2 * np.pi / lam[iw]:.6f}")
-            if iw < len(lam) - 1:
+        for iw in range(len(wavelength)):
+            f.write(f"{2 * np.pi / wavelength[iw]:.6f}")
+            if iw < len(wavelength) - 1:
                 f.write("\n")
 
-    lambda_mat = np.insert(lam, 0, min(lam) * 0.9)
-    lambda_mat = np.append(lambda_mat, max(lam) * 1.1)
+    lambda_mat = np.insert(wavelength, 0, min(wavelength) * 0.9)
+    lambda_mat = np.append(lambda_mat, max(wavelength) * 1.1)
     w = 2 * np.pi * c0 / lambda_mat * 1e6
 
     for mat_label, nk_raw in Material.items():
         if not isinstance(nk_raw, np.ndarray):
             raise ValueError(f'"{mat_label}" values are not ndarray')
-        if len(lam) != len(nk_raw):
-            raise ValueError(f'size of "{mat_label}" and "lam" arrays must be equal')
+        if len(wavelength) != len(nk_raw):
+            raise ValueError(f'size of "{mat_label}" and "wavelength" arrays must be equal')
 
-        nk_data = np.interp(lambda_mat, lam, nk_raw.astype(complex))
+        nk_data = np.interp(lambda_mat, wavelength, nk_raw.astype(complex))
         eps = nk_data**2
 
         with open(f"{mat_label}.dat", "w") as f:

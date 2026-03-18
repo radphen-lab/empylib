@@ -188,13 +188,13 @@ NOTEBOOK_SPECS["nklib_test.ipynb"] = {
             "functions": ["nk.get_nkfile"],
             "problem": "A common starting point is a tabulated material file. Here we load silica from the packaged database, interpolate it on a wavelength grid, and compare the interpolated `n + ik` output against the raw table.",
             "parameters": [
-                "`lam`: wavelength grid in micrometers where you want the interpolated refractive index",
+                "`wavelength`: wavelength grid in micrometers where you want the interpolated refractive index",
                 "`MaterialName`: base name of the `.nk` file without the extension",
                 "`get_from_local_path=True`: search inside `empylib/nk_files` instead of the current working directory",
                 "`lam_units='um'`: declares the units of the wavelength grid you passed in",
             ],
             "outputs": [
-                "`n_sio2`: complex array `n + ik` evaluated on `lam`",
+                "`n_sio2`: complex array `n + ik` evaluated on `wavelength`",
                 "`nk_table`: original tabulated data as a DataFrame indexed by wavelength",
                 "a quick plot showing the interpolated real and imaginary parts",
             ],
@@ -239,7 +239,7 @@ NOTEBOOK_SPECS["nklib_test.ipynb"] = {
             "problem": "Sometimes you trust tabulated data only in a limited interval and want a smooth handoff to a model outside that interval. This example uses a Lorentz model as the outer behavior and the measured data in the middle.",
             "parameters": [
                 "`nk_df`: DataFrame with `n` and `k` columns indexed by wavelength",
-                "`nk_model`: model-predicted complex index on the same wavelength grid as `lam`",
+                "`nk_model`: model-predicted complex index on the same wavelength grid as `wavelength`",
                 "`blend_low` and `blend_high`: smoothing windows near the lower and upper table edges",
                 "`epsinf`, `wp`, `wn`, `gamma`: Lorentz parameters controlling high-frequency dielectric constant, strength, resonance, and damping",
             ],
@@ -528,7 +528,7 @@ NOTEBOOK_SPECS["nklib_test.ipynb"] = {
             "functions": ["nk.VO2"],
             "problem": "VO2 is a useful example of a phase-change material with a temperature-controlled optical response. This function blends the cold and hot optical constants internally and gives you a single temperature-dependent spectrum.",
             "parameters": [
-                "`lam`: wavelength grid in micrometers",
+                "`wavelength`: wavelength grid in micrometers",
                 "`T`: material temperature in Celsius",
                 "`film`: selects which tabulated VO2 film from the packaged dataset is used",
             ],
@@ -695,7 +695,7 @@ NOTEBOOK_SPECS["ref_spectra_test.ipynb"] = {
             "functions": ["ref.read_spectrafile", "ref.AM15", "ref.T_atmosphere", "ref.T_atmosphere_hemi", "ref.Bplanck"],
             "problem": "Many optical calculations need a weighting spectrum or an atmospheric transmission curve. This section shows how to fetch the most common packaged references on a shared wavelength grid.",
             "parameters": [
-                "`lam`: wavelength grid in micrometers used for all interpolated spectra",
+                "`wavelength`: wavelength grid in micrometers used for all interpolated spectra",
                 "`MaterialName='T_atmosphere.txt'`: packaged text file loaded with `read_spectrafile`",
                 "`spectra_type`: choose `'global'` or `'direct'` for AM1.5",
                 "`beta_tilt`: collector tilt angle in degrees for hemispherical atmosphere",
@@ -824,7 +824,7 @@ NOTEBOOK_SPECS["ref_spectra_test.ipynb"] = {
             "functions": ["ref.plot_spectra"],
             "problem": "You will often want to show more than one spectral quantity on the same axes with the built-in solar and thermal backgrounds. `plot_spectra` gives you a consistent plotting style for that job.",
             "parameters": [
-                "each curve is passed as `(lam, values, style_dict)`",
+                "each curve is passed as `(wavelength, values, style_dict)`",
                 "`ylabel`: label for the plotted spectral quantity",
                 "`title`: figure title",
                 "`show_background_legend=True`: include the background guides in the legend",
@@ -1061,7 +1061,7 @@ NOTEBOOK_SPECS["miescattering_test.ipynb"] = {
             "functions": ["mie.scatter_efficiency"],
             "problem": "The most common entry point is the scattering efficiency of one sphere embedded in a host medium. This gives absorption, scattering, and asymmetry factor on a wavelength grid.",
             "parameters": [
-                "`lam`: wavelength grid in micrometers",
+                "`wavelength`: wavelength grid in micrometers",
                 "`Nh`: refractive index of the host medium",
                 "`Np_shells`: refractive index of the particle; a single scalar or wavelength-dependent spectrum for a homogeneous sphere",
                 "`D`: particle diameter in micrometers",
@@ -1630,7 +1630,7 @@ NOTEBOOK_SPECS["scuffem_test.ipynb"] = {
             "functions": ["scf.make_spectral_files"],
             "problem": "Before a SCUFF-EM run, you need an omega list and material files in the expected format. `make_spectral_files` creates those files from a wavelength grid and a material dictionary.",
             "parameters": [
-                "`lam`: wavelength grid in micrometers",
+                "`wavelength`: wavelength grid in micrometers",
                 "`Material`: dictionary mapping material names to complex refractive-index arrays",
                 "the current working directory determines where the files are written",
             ],
@@ -1848,7 +1848,7 @@ NOTEBOOK_SPECS["color_system_test.ipynb"] = {
             "functions": ["cs.spectrum_to_hex"],
             "problem": "Sometimes the standard illuminants are not what matters. This example uses AM1.5G as a custom viewing illuminant so the perceived material color reflects a solar-like source spectrum.",
             "parameters": [
-                "`illuminant=(lam, solar_spd)`: custom illuminant given as wavelength grid plus spectral power density",
+                "`illuminant=(wavelength, solar_spd)`: custom illuminant given as wavelength grid plus spectral power density",
                 "`illuminant_units='per_um'`: units of that custom illuminant spectrum",
                 "`source='material'`: still a material factor, so the illuminant matters",
             ],

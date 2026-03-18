@@ -28,14 +28,14 @@ __all__ = ['read_spectrafile',
 # Global cache for loaded files and interpolators
 _file_cache = {}
 
-def read_spectrafile(lam, MaterialName, get_from_local_path=False, return_data=False):
+def read_spectrafile(wavelength, MaterialName, get_from_local_path=False, return_data=False):
     """
     Reads a text file and returns an interpolated 1D NumPy array 
     for the specified material's spectral data.
 
     Parameters
     ----------
-    lam : float or ndarray
+    wavelength : float or ndarray
         Wavelengths (in µm) to interpolate.
     MaterialName : str
         Name of the file (with extension).
@@ -52,7 +52,7 @@ def read_spectrafile(lam, MaterialName, get_from_local_path=False, return_data=F
         Original tabulated data.
     """
 
-    lam = _np.atleast_1d(lam)
+    wavelength = _np.atleast_1d(wavelength)
 
     # Resolve path
     if get_from_local_path:
@@ -77,19 +77,19 @@ def read_spectrafile(lam, MaterialName, get_from_local_path=False, return_data=F
         data = _file_cache[file_path]
 
     # Interpolate
-    out = _np.interp(lam, data[:, 0], data[:, 1], left=0, right=0)
+    out = _np.interp(wavelength, data[:, 0], data[:, 1], left=0, right=0)
 
     if return_data:
         return out, data
     return out
 
-def AM15(lam,spectra_type='global'):
+def AM15(wavelength, spectra_type='global'):
     '''
     AM1.5 spectra
 
     Parameters
     ----------
-    lam : 1D float array (or scalar)
+    wavelength : 1D float array (or scalar)
         wavelength in um.
 
     Returns
@@ -97,20 +97,20 @@ def AM15(lam,spectra_type='global'):
     Interpolated AM1.5 spectra
 
     '''
-    # interpolate values according to lam spectra
-    lam = lam*1E3 # change units to nm
+    # interpolate values according to wavelength spectra
+    wavelength = wavelength * 1E3  # change units to nm
     
     if spectra_type == 'global':
-        Isun = read_spectrafile(lam,'AM15_Global.txt', True)
+        Isun = read_spectrafile(wavelength, 'AM15_Global.txt', True)
     elif spectra_type == 'direct':
-        Isun = read_spectrafile(lam,'AM15_Direct.txt', True)
+        Isun = read_spectrafile(wavelength, 'AM15_Direct.txt', True)
     
     # keep only positive values
     Isun = _np.clip(Isun, 0, None)
     
     return Isun*1E3  # spectra in W/m2 um
 
-def T_atmosphere(lam):
+def T_atmosphere(wavelength):
     '''
     Spectral transmissivity of the atmosphere for an horizontal surface 
     at normal incidence. Data taken from:
@@ -119,7 +119,7 @@ def T_atmosphere(lam):
 
     Parameters
     ----------
-    lam : 1D float array (or scalar)
+    wavelength : 1D float array (or scalar)
         wavelength in um.
 
     Returns
@@ -127,15 +127,15 @@ def T_atmosphere(lam):
     Interpolated Transmissivity of the atmosphere
 
     '''
-    # interpolate values according to lam spectra
-    T_atm =  read_spectrafile(lam,'T_atmosphere.txt', True)
+    # interpolate values according to wavelength spectra
+    T_atm = read_spectrafile(wavelength, 'T_atmosphere.txt', True)
     
     # keep only positive values
     T_atm = _np.clip(T_atm, 0, None)
 
     return T_atm
 
-def T_atmosphere_hemi(lam, beta_tilt=0):
+def T_atmosphere_hemi(wavelength, beta_tilt=0):
     """
     Computes the hemispherical atmospheric transmittance spectrum over a surface tilted at a given angle.
     This function integrates the directional atmospheric transmittance over a hemisphere centered 
@@ -145,7 +145,7 @@ def T_atmosphere_hemi(lam, beta_tilt=0):
 
     Parameters
     ----------
-    lam : 1D ndarray
+    wavelength : 1D ndarray
         Wavelengths in micrometers [μm].
     beta_tilt : float, optional
         Tilt angle of the surface in degrees with respect to the vertical (default is 0°).
@@ -153,7 +153,7 @@ def T_atmosphere_hemi(lam, beta_tilt=0):
     Returns
     -------
     T_hemi : 1D ndarray
-        Hemispherical atmospheric transmittance spectrum corresponding to each wavelength in `lam`.
+        Hemispherical atmospheric transmittance spectrum corresponding to each wavelength in `wavelength`.
 
     Notes
     -----
@@ -184,10 +184,10 @@ def T_atmosphere_hemi(lam, beta_tilt=0):
     cos_theta = _np.cos(theta_flat[mask])  # shape: (M,)
 
     # T_atmosphere for all wavelengths
-    T_vec = T_atmosphere(lam)[:, None]  # shape: (L,1)
+    T_vec = T_atmosphere(wavelength)[:, None]  # shape: (L,1)
 
     # Compute directional emissivity: (L, N)
-    trans = _np.ones((len(lam), len(theta_flat)))  # shape: (L, N)
+    trans = _np.ones((len(wavelength), len(theta_flat)))  # shape: (L, N)
     trans[:, mask] = T_vec**(1 / cos_theta)  # broadcasting over wavelengths
 
     # Integrate over angles
@@ -204,15 +204,15 @@ def T_atmosphere_hemi(lam, beta_tilt=0):
 
     return T_hemi
 
-def Bplanck(lam, T, unit='wavelength'):
+def Bplanck(wavelength, T, unit='wavelength'):
     """
     Spectral Planck black-body distribution (radiance).
     
     Parameters
     ----------
-    lam : array_like
+    wavelength : array_like
         Wavelength(s) in microns (um) if unit='wavelength';
-        still passed in microns when unit='frequency' (frequency computed from lam).
+        still passed in microns when unit='frequency' (frequency computed from wavelength).
     T : float
         Temperature in K.
     unit : {'wavelength','frequency'}
@@ -231,11 +231,11 @@ def Bplanck(lam, T, unit='wavelength'):
     h    = 2.0*_np.pi*hbar             # J·s
     kB   = float(_em.kBoltzmann)      # J/K
 
-    lam = _np.asarray(lam, dtype=_np.float64)
+    wavelength = _np.asarray(wavelength, dtype=_np.float64)
     T   = float(T)
 
     # invalids (avoid divide-by-zero / negatives)
-    invalid = (T <= 0) | (lam <= 0)
+    invalid = (T <= 0) | (wavelength <= 0)
 
     # helper: stable 1/(exp(x)-1)
     # - for small x: use 1/x - 1/2 + x/12  (from series)
@@ -270,7 +270,7 @@ def Bplanck(lam, T, unit='wavelength'):
     with _np.errstate(over='ignore', under='ignore', divide='ignore', invalid='ignore'):
         if unit == 'wavelength':
             # meters
-            ll = lam * 1e-6
+            ll = wavelength * 1e-6
 
             x = (h*c0) / (ll * kB * T)                # dimensionless
             denom = inv_expm1(x)                      # ≈ 1/(exp(x)-1), overflow-safe
@@ -279,8 +279,8 @@ def Bplanck(lam, T, unit='wavelength'):
             Ibb   = Ibb_m * 1e-6                      # → W·m^-2·um^-1·sr^-1
 
         elif unit == 'frequency':
-            # frequency from lam (lam passed in microns)
-            ll = lam * 1e-6
+            # frequency from wavelength (passed in microns)
+            ll = wavelength * 1e-6
             vv = c0 / ll                               # Hz
 
             x = (h*vv) / (kB*T)                        # dimensionless
@@ -290,20 +290,20 @@ def Bplanck(lam, T, unit='wavelength'):
         else:
             raise ValueError("unit must be 'wavelength' or 'frequency'")
 
-    # set invalids to nan (e.g., nonpositive T or lam)
+    # set invalids to nan (e.g., nonpositive T or wavelength)
     if _np.any(invalid):
         Ibb = _np.where(invalid, _np.nan, Ibb)
 
     return Ibb
 
 
-def yCIE_lum(lam):
+def yCIE_lum(wavelength):
     '''
     CIE photoscopic luminosity function from Stockman & Sharpe as a function of wavelength
 
     Parameters
     ----------
-    lam : 1D float array (or scalar)
+    wavelength : 1D float array (or scalar)
         wavelength in um.
 
     Returns
@@ -311,10 +311,10 @@ def yCIE_lum(lam):
     Interpolated CIE lum
 
     '''
-    # interpolate values according to lam spectra
-    lam = lam*1E3 # change units to nm
+    # interpolate values according to wavelength spectra
+    wavelength = wavelength * 1E3  # change units to nm
     
-    yCIE = read_spectrafile(lam,'CIE_lum.txt', True)
+    yCIE = read_spectrafile(wavelength, 'CIE_lum.txt', True)
     
     # keep only positive values
     yCIE = _np.clip(yCIE, 0, None)

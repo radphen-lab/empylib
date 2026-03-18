@@ -73,7 +73,7 @@ def interface(N_above, N_below, *, aoi = 0, polarization=False):
         Spectral refractive index medium below the interface.
         
     aoi : ndarray or float
-        Angle of incidence in radians.
+        Angle of incidence in radians (real or complex).
         
     polarization: str (optional)
         Polarization of incident field. Could be:
@@ -97,7 +97,7 @@ def interface(N_above, N_below, *, aoi = 0, polarization=False):
     
     '''
     # Normalize inputs to 1D spectral/angle arrays.
-    th = _as_real_array(aoi, 'aoi').astype(complex)
+    th = _as_1d_array(aoi, 'aoi', dtype=complex)
     th_scalar = np.isscalar(aoi)
 
     n1_raw = np.asarray(N_above)
@@ -153,11 +153,11 @@ def interface(N_above, N_below, *, aoi = 0, polarization=False):
     return _unpolarized_output(out['TE'], out['TM'])
 
 def multilayer(
-    lam,
-    aoi=0,
+    wavelength,
     N_layers=None,
     thickness=None,
     *,
+    aoi=0,
     N_above=1.0,
     N_below=1.0,
     polarization=False
@@ -168,11 +168,8 @@ def multilayer(
 
     Parameters
     ----------
-    lam : ndarray or float
+    wavelength : ndarray or float
         Wavelength range in microns.
-        
-    aoi : ndarray or float, optional
-        Angle of incidence in radians.
         
     N_layers : float, ndarray, or list
         Refractive index of each finite layer. It can be:
@@ -180,11 +177,14 @@ def multilayer(
         - a single 1D ndarray (single-layer, wavelength-dependent),
         - a list of floats,
         - or a mixed list of floats and 1D ndarrays, where each ndarray has
-          size len(lam).
+          size len(wavelength).
         
     thickness : list or float
         Thickness of each layer in microns. A single float is allowed for a
         single-layer case.
+        
+    aoi : ndarray or float, optional
+        Angle of incidence in radians.
 
     N_above : float (optional)
         Refractive index of the medium above the film (default 1.0)
@@ -212,15 +212,31 @@ def multilayer(
     t: ndarray
         Transmission coeficient
 
+    Notes
+    -----
+    If ``N_layers`` is ``None`` or empty, the computation falls back to a
+    single-interface Fresnel evaluation between ``N_above`` and ``N_below``.
+
     '''
-    if N_layers is None:
-        N_layers = []
     if thickness is None:
         thickness = []
 
+    # Gracefully handle the no-layer case as a single interface calculation.
+    if N_layers is None or (
+        isinstance(N_layers, (list, tuple, np.ndarray)) and len(N_layers) == 0
+    ):
+        _, _, _, n0, nS = _assert_multilayer_input(
+            wavelength,
+            [],
+            [],
+            N_above=N_above,
+            N_below=N_below,
+        )
+        return interface(n0, nS, aoi=aoi, polarization=polarization)
+
     # Validate and standardize multilayer inputs to spectral arrays.
     wl, dL, nL, n0, nS = _assert_multilayer_input(
-        lam, thickness, N_layers, N_above=N_above, N_below=N_below
+        wavelength, thickness, N_layers, N_above=N_above, N_below=N_below
     )
     th = _as_1d_array(aoi, 'aoi', dtype=complex)
     th_scalar = np.isscalar(aoi)
@@ -331,7 +347,7 @@ def multilayer(
     return _unpolarized_output(out['TE'], out['TM'])
 
 def incoh_multilayer(
-    lam,
+    wavelength,
     N_layers=None,
     thickness=None,
     *,
@@ -349,7 +365,7 @@ def incoh_multilayer(
 
     Parameters
     ----------
-    lam : ndarray
+    wavelength : ndarray
         wavelength range (microns)
         
     aoi : float, optional
@@ -361,7 +377,7 @@ def incoh_multilayer(
         - a single 1D ndarray (single-layer, wavelength-dependent),
         - a list of floats,
         - or a mixed list of floats and 1D ndarrays, where each ndarray has
-          size len(lam).
+          size len(wavelength).
         
     thickness : list or float
         Thickness of each layer in microns. A single float is allowed for a
@@ -399,7 +415,7 @@ def incoh_multilayer(
     # Resolve polarization mode and validate all spectral inputs.
     pols = _resolve_polarization(polarization)
     wl, dL, nL, n0, nS = _assert_multilayer_input(
-        lam, thickness, N_layers, N_above=N_above, N_below=N_below
+        wavelength, thickness, N_layers, N_above=N_above, N_below=N_below
     )
 
     if not np.isscalar(aoi):
@@ -494,13 +510,13 @@ def incoh_multilayer(
         return out[pols[0]]
     return _unpolarized_output(out['TE'], out['TM'])
 
-def _assert_multilayer_input(lam, thickness, N_layers, *, N_above=1.0, N_below=1.0):
+def _assert_multilayer_input(wavelength, thickness, N_layers, *, N_above=1.0, N_below=1.0):
     '''
     Verify that multilayer input complies with required dimensions
 
     Parameters
     ----------
-    lam : float or ndarray
+    wavelength : float or ndarray
         wavelength range (microns)
         
     thickness : list or float
@@ -513,7 +529,7 @@ def _assert_multilayer_input(lam, thickness, N_layers, *, N_above=1.0, N_below=1
         - a single 1D ndarray (single-layer, wavelength-dependent),
         - a list of floats,
         - or a mixed list of floats and 1D ndarrays, where each ndarray has
-          size len(lam).
+          size len(wavelength).
 
     N_above : float or ndarray, optional
         Refractive index of the semi-infinite medium above.
@@ -523,37 +539,37 @@ def _assert_multilayer_input(lam, thickness, N_layers, *, N_above=1.0, N_below=1
 
     Returns
     -------
-    lam : ndarray
+    wavelength : ndarray
         Wavelength range (microns).
 
     thicknesses : list
         Thickness of each layer in microns.
 
     N_layers : list
-        Finite-layer refractive indices as ndarrays of size len(lam).
+        Finite-layer refractive indices as ndarrays of size len(wavelength).
 
     N_above_arr : ndarray
-        Upper semi-infinite medium refractive index as ndarray of size len(lam).
+        Upper semi-infinite medium refractive index as ndarray of size len(wavelength).
 
     N_below_arr : ndarray
-        Lower semi-infinite medium refractive index as ndarray of size len(lam).
+        Lower semi-infinite medium refractive index as ndarray of size len(wavelength).
 
     '''
     # Wavelength must be positive and represented as 1D array.
     return _normalize_multilayer_inputs(
-        lam,
+        wavelength,
         thickness,
         N_layers,
         N_above=N_above,
         N_below=N_below,
     )
 
-def _TMMcoh(lam, aoi, N_layers, thickness, polarization):
+def _TMMcoh(wavelength, aoi, N_layers, thickness, polarization):
     '''
     Calculate the coherent transfer matrix for a multilayer stack.
     Parameters
     ----------
-    lam : ndarray
+    wavelength : ndarray
         wavelength range (microns)
     aoi : ndarray
         angle of incidence for each wavelength (radians)
@@ -583,13 +599,13 @@ def _TMMcoh(lam, aoi, N_layers, thickness, polarization):
     d_b.reverse()
     
     # Iterate wavelength-by-wavelength to evaluate forward and reverse stacks.
-    th_end = np.zeros(len(lam), dtype=complex)
-    r_f = np.zeros(len(lam), dtype=complex)
-    t_f = np.zeros(len(lam), dtype=complex)
-    r_b = np.zeros(len(lam), dtype=complex)
-    t_b = np.zeros(len(lam), dtype=complex)
+    th_end = np.zeros(len(wavelength), dtype=complex)
+    r_f = np.zeros(len(wavelength), dtype=complex)
+    t_f = np.zeros(len(wavelength), dtype=complex)
+    r_b = np.zeros(len(wavelength), dtype=complex)
+    t_b = np.zeros(len(wavelength), dtype=complex)
 
-    for i in range(len(lam)):
+    for i in range(len(wavelength)):
         # Snell propagation to final medium angle for this wavelength.
         th_end[i] = snell(
             N_layers[0][i],
@@ -605,8 +621,8 @@ def _TMMcoh(lam, aoi, N_layers, thickness, polarization):
 
         # Coherent amplitudes for forward and reverse incidence.
         r_f[i], t_f[i] = multilayer(
-            lam[i],
-            aoi[i],
+            wavelength[i],
+            aoi=aoi[i],
             N_layers=n_f[1:-1],
             thickness=d_f,
             N_above=n_f[0],
@@ -614,8 +630,8 @@ def _TMMcoh(lam, aoi, N_layers, thickness, polarization):
             polarization=polarization
         )[-2:]
         r_b[i], t_b[i] = multilayer(
-            lam[i],
-            th_end[i],
+            wavelength[i],
+            aoi=th_end[i],
             N_layers=n_b[1:-1],
             thickness=d_b,
             N_above=n_b[0],

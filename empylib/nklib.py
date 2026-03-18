@@ -34,14 +34,14 @@ __all__ = ('get_nkfile', 'get_ri_info',
             'Si', 'gold', 'silver', 'Cu', 'Al', 'Mg',
             'HDPE', 'PDMS', 'PMMA', 'PVDF', 'H2O')
 
-def blend_model(lam, nk_df, nk_model, blend_low=None, blend_high=None):
+def blend_model(wavelength, nk_df, nk_model, blend_low=None, blend_high=None):
 
     # get inside index based on zero values of nk_interp
     lam_min, lam_max = float(nk_df.index[0]), float(nk_df.index[-1])
-    inside = (lam >= lam_min) & (lam <= lam_max)
+    inside = (wavelength >= lam_min) & (wavelength <= lam_max)
 
     # interpolate nk data
-    nk_interp = _np.interp(lam, nk_df.index, nk_df['n'] + 1j*nk_df['k'])
+    nk_interp = _np.interp(wavelength, nk_df.index, nk_df['n'] + 1j*nk_df['k'])
     nk_out = _np.empty_like(nk_interp, dtype=complex)
     nk_out[~inside] = nk_model[~inside]     # outside data range: model
     nk_out[inside] = nk_interp[inside]    # inside data range: interpolated data
@@ -60,9 +60,9 @@ def blend_model(lam, nk_df, nk_model, blend_low=None, blend_high=None):
         bw = float(blend_low)
 
         # lower edge
-        low = (lam >= lam_min) & (lam <= lam_min + bw)
+        low = (wavelength >= lam_min) & (wavelength <= lam_min + bw)
         if _np.any(low):
-            t = (lam[low] - lam_min) / bw  # 0..1
+            t = (wavelength[low] - lam_min) / bw  # 0..1
             # smoothstep
             s = t*t*(3 - 2*t)
             nk_itp = nk_interp[low] 
@@ -72,16 +72,16 @@ def blend_model(lam, nk_df, nk_model, blend_low=None, blend_high=None):
     if blend_high > 0:
         bw = float(blend_high)
         # upper edge
-        high = (lam <= lam_max) & (lam >= lam_max - bw)
+        high = (wavelength <= lam_max) & (wavelength >= lam_max - bw)
         if _np.any(high):
-            t = (lam_max - lam[high]) / bw  # 0..1
+            t = (lam_max - wavelength[high]) / bw  # 0..1
             s = t*t*(3 - 2*t)
             nk_itp = nk_interp[high]
             nk_out[high] = (1 - s)*nk_model[high] + s*nk_itp
 
     return nk_out
 
-def get_nkfile(lam, MaterialName=None, get_from_local_path = False, lam_units = 'um', *, 
+def get_nkfile(wavelength, MaterialName=None, get_from_local_path = False, lam_units = 'um', *, 
                extrapolate = 'flat'):
     '''
     Reads a tabulated *.nk file and returns an interpolated
@@ -89,7 +89,7 @@ def get_nkfile(lam, MaterialName=None, get_from_local_path = False, lam_units = 
     
     Parameters
     ----------
-    lam : ndarray
+    wavelength : ndarray
         Wavelengths to interpolate (um).
     MaterialName : string
         Name of *.nk file
@@ -132,15 +132,15 @@ def get_nkfile(lam, MaterialName=None, get_from_local_path = False, lam_units = 
     nk_df.columns = ['n', 'k']
     nk_df.index.name = 'lambda'
 
-    # convert lam to um
+    # convert wavelength to um
     nk_df.index = _convert_units(nk_df.index, lam_units, to='um')
 
-    return _process_nk_data(lam, nk_df, MaterialName, extrapolate)
+    return _process_nk_data(wavelength, nk_df, MaterialName, extrapolate)
 
 def ri_info_data(shelf,book,page):
     """
     Reads a YAML file containing 'nk' tabulated optical data from a URL and returns:
-    - lam: ndarray of wavelengths
+    - wavelength: ndarray of wavelengths
     - nk: ndarray of complex refractive indices (n + ik)
     """
     url_root = 'https://refractiveindex.info/database/data/' 
@@ -163,14 +163,14 @@ def ri_info_data(shelf,book,page):
 
     return nk_df
 
-def get_ri_info(lam,shelf,book,page, *, extrapolate = 'flat'):
+def get_ri_info(wavelength, shelf, book, page, *, extrapolate='flat'):
     '''
     Extract refractive index from refractiveindex.info database. This code
     uses the refidx package from Bejamin Vial (https://gitlab.com/benvial/refidx)
 
     Parameters
     ----------
-    lam : ndarray
+    wavelength : ndarray
         Wavelengths to interpolate (um).
     shelf : string
         Name of the shelf (main, organic, glass, other, 3D)
@@ -191,15 +191,15 @@ def get_ri_info(lam,shelf,book,page, *, extrapolate = 'flat'):
     nk_df = ri_info_data(shelf,book,page)
     MaterialName = book + '_' + page
 
-    return _process_nk_data(lam, nk_df, MaterialName, extrapolate)
+    return _process_nk_data(wavelength, nk_df, MaterialName, extrapolate)
 
-def _process_nk_data(lam, nk_df, MaterialName, extrapolate):
+def _process_nk_data(wavelength, nk_df, MaterialName, extrapolate):
     '''
     Process nk dataframe and interpolate to desired wavelengths.
     
     Parameters
     ----------
-    lam : ndarray
+    wavelength : ndarray
         Wavelengths to interpolate (um).
     nk_df : DataFrame
         DataFrame containing 'n' and 'k' columns indexed by wavelength.
@@ -216,21 +216,21 @@ def _process_nk_data(lam, nk_df, MaterialName, extrapolate):
         Original tabulated data from file
     '''
     
-    # check if lam is not ndarray
-    lam, lam_isfloat = _ndarray_check(lam) 
+    # check if wavelength is not ndarray
+    wavelength, wavelength_isfloat = _ndarray_check(wavelength) 
 
     # create complex refractive index using interpolation form nkfile
     nk_df_complex = nk_df['n'] + 1j*nk_df['k']
     if extrapolate is False:
-        N = _np.interp(lam, nk_df.index, nk_df_complex, 
+        N = _np.interp(wavelength, nk_df.index, nk_df_complex, 
                        left = complex(0, 0), right = complex(0, 0))
     
     elif extrapolate == 'flat':
-        N = _np.interp(lam, nk_df.index, nk_df_complex)
+        N = _np.interp(wavelength, nk_df.index, nk_df_complex)
     
     elif isinstance(extrapolate, dict):
-        N_model = multi_oscillator(lam, extrapolate)
-        N = blend_model(lam, nk_df, N_model)
+        N_model = multi_oscillator(wavelength, extrapolate)
+        N = blend_model(wavelength, nk_df, N_model)
     else:
         raise ValueError("Extrapolation method not recognized. Use False, 'flat', or dict with oscillator parameters.") 
 
@@ -239,10 +239,10 @@ def _process_nk_data(lam, nk_df, MaterialName, extrapolate):
     
     # warning if extrapolated values
     lo, hi = float(nk_df.index[0]), float(nk_df.index[-1])
-    _warn_extrapolation(lam, lo, hi, label=MaterialName, quantity="refractive index")
+    _warn_extrapolation(wavelength, lo, hi, label=MaterialName, quantity="refractive index")
     
-    # if lam was float (orginaly), convert N to a complex value
-    return complex(N[0]) if lam_isfloat else N, nk_df
+    # if wavelength was float (orginaly), convert N to a complex value
+    return complex(N[0]) if wavelength_isfloat else N, nk_df
 
 '''
     --------------------------------------------------------------------
@@ -282,7 +282,7 @@ def _split_by_max(arr, threshold):
     index_list.append(idx)  # Append the last group
     return index_list
 
-def _fix_nk_anomalous(lam, n, k):
+def _fix_nk_anomalous(wavelength, n, k):
     '''
     PENDING
     Analyze nk to fix anomalous behaviors. In the case of n, it just makes 
@@ -291,7 +291,7 @@ def _fix_nk_anomalous(lam, n, k):
 
     Parameters
     ------------
-    lam: ndarray
+    wavelength: ndarray
         Wavelength of tabulated data
     n, k: ndarray
         Tabulated n and k
@@ -313,7 +313,7 @@ def _fix_nk_anomalous(lam, n, k):
     #---------------------------------------------------------------------
     d = 1                                     # Film test thickness (um)
     T_threst = 0.996                          # Transmittance threshold
-    a_coef = 4*_np.pi*k/lam                    # Absorption coefficient of film (1/um)
+    a_coef = 4*_np.pi*k/wavelength             # Absorption coefficient of film (1/um)
     T_bl = _np.exp(-a_coef*d)                  # Get Beer-Lambert transmittance
     idx_list = _split_by_max(T_bl, T_threst)  # Find index that pass threshold
 
@@ -322,23 +322,23 @@ def _fix_nk_anomalous(lam, n, k):
 
         # Adjust k values to a linear regression with very large slope
         slope = 20                            # slope of the curve
-        x0, y0 = _np.log(lam[idx[0] ]), _np.log(k[idx[0]])
+        x0, y0 = _np.log(wavelength[idx[0] ]), _np.log(k[idx[0]])
         b_dw = y0 + slope*x0                  # find y-intersept of downward curve
 
-        x0, y0 = _np.log(lam[idx[-1] ]), _np.log(k[idx[-1]])
+        x0, y0 = _np.log(wavelength[idx[-1] ]), _np.log(k[idx[-1]])
         b_up = y0 - slope*x0                  # find y-intersept of upward curve
 
         # find intersection between the two curves
         x_intersect = _np.exp((b_dw - b_up)/(2*slope)) 
-        idx_cut = _np.where(lam < x_intersect)[0][-1]  # index of intersection
+        idx_cut = _np.where(wavelength < x_intersect)[0][-1]  # index of intersection
 
         # create new k values with linear curves
-        k_new[idx[0]:idx_cut]  = _np.exp(b_dw - slope*_np.log(lam[idx[0]:idx_cut]))
-        k_new[idx_cut:idx[-1]] = _np.exp(b_up + slope*_np.log(lam[idx_cut:idx[-1]]))
+        k_new[idx[0]:idx_cut]  = _np.exp(b_dw - slope*_np.log(wavelength[idx[0]:idx_cut]))
+        k_new[idx_cut:idx[-1]] = _np.exp(b_up + slope*_np.log(wavelength[idx_cut:idx[-1]]))
 
     return n_new + 1j*k_new
 
-def gaussian(lam, A,Br,E0):
+def gaussian(wavelength, A,Br,E0):
     '''
     Gaussian oscillator model for dielectric constant based on
     parameters from ellipsometry measurements. The model first calculates
@@ -356,7 +356,7 @@ def gaussian(lam, A,Br,E0):
     E0  : float
         Oscillator energy (eV)
 
-    lam : ndarray
+    wavelength : ndarray
         Wavelengths range (um)
 
     Returns
@@ -370,15 +370,15 @@ def gaussian(lam, A,Br,E0):
                     - A*_np.exp(-(f*(E + E0)/Br)**2)
 
     # get real and imaginary part of dielectric constant
-    E = _convert_units(lam,'um','eV')                               # lambda range in eV
+    E = _convert_units(wavelength,'um','eV')                        # wavelength range in eV
     a, b = max(E0 - 5*Br,0), E0 + 5*Br                             # integration range
-    eps_re = eps_real_kkr(lam,eps_G,int_range=(a, b), cshift=1e-4) # get real part from KK
+    eps_re = eps_real_kkr(wavelength, eps_G, int_range=(a, b), cshift=1e-4) # get real part from KK
     eps_im = eps_G(E)                                              # imaginary component
 
     eps = eps_re + 1j*eps_im
     return _np.sqrt(eps)
 
-def tauc_lorentz(lam, A,C,E0,Eg):
+def tauc_lorentz(wavelength, A,C,E0,Eg):
     '''
     Tauc-Lorentz oscillator model for dielectric constant based on
     parameters from ellipsometry measurements.
@@ -397,7 +397,7 @@ def tauc_lorentz(lam, A,C,E0,Eg):
     Eg  : float
         Bandgap (eV)
         
-    lam : ndarray
+    wavelength : ndarray
         Wavelengths range (um)
 
     Returns
@@ -411,9 +411,9 @@ def tauc_lorentz(lam, A,C,E0,Eg):
                  ((E**2 - E0**2)**2 + C**2*E**2)*(E > Eg)
     
     # get real and imaginary part of dielectric constant
-    E = _convert_units(lam,'um','eV')                                # lambda range in eV
+    E = _convert_units(wavelength,'um','eV')                         # wavelength range in eV
     a, b = Eg-20*C, Eg + 20*C                                            # set integration range
-    eps_re = eps_real_kkr(lam,eps_TL,int_range=(a, b), cshift=1e-3) # get real part from KK
+    eps_re = eps_real_kkr(wavelength, eps_TL, int_range=(a, b), cshift=1e-3) # get real part from KK
     eps_im = eps_TL(E)                                              # imaginary component
     
     #------------------------------------------------------------------------------
@@ -433,7 +433,7 @@ def tauc_lorentz(lam, A,C,E0,Eg):
     eps = eps_re + 1j*eps_im
     return _np.sqrt(eps)
 
-def lorentz(lam, epsinf,wp,wn,gamma):
+def lorentz(wavelength, epsinf,wp,wn,gamma):
     '''
     Refractive index from Lorentz model
 
@@ -447,7 +447,7 @@ def lorentz(lam, epsinf,wp,wn,gamma):
         Natural frequency in eV
     gamma : float
         Decay rate in eV
-    lam : linear _np.array
+    wavelength : linear _np.array
         wavelength spectrum in um
 
     Returns
@@ -456,11 +456,11 @@ def lorentz(lam, epsinf,wp,wn,gamma):
 
     '''
     from .utils import convert_units
-    w = convert_units(lam,'um','eV')  # conver from um to eV 
+    w = convert_units(wavelength, 'um', 'eV')  # convert from um to eV 
     
     return _np.sqrt(epsinf + wp**2/(wn**2 - w**2 - 1j*gamma*w))
 
-def drude(lam, epsinf,wp,gamma):
+def drude(wavelength, epsinf,wp,gamma):
     '''
     Refractive index from Drude model
 
@@ -472,7 +472,7 @@ def drude(lam, epsinf,wp,gamma):
         Plasma frequency, in eV (wp^2 = Nq^2/eps0 m).
     gamma : float
         Decay rate in eV
-    lam : linear _np.array
+    wavelength : linear _np.array
         wavelength spectrum in um
 
     Returns
@@ -485,17 +485,17 @@ def drude(lam, epsinf,wp,gamma):
     hbar = 1.0545718E-34          # J*s (plank's constan)
     
     
-    w = 2*_np.pi*3E14/lam*hbar/eV  # conver from um to eV 
+    w = 2*_np.pi*3E14/wavelength*hbar/eV  # convert from um to eV 
     
     return _np.sqrt(epsinf - wp**2/(w**2 + 1j*gamma*w))
 
-def multi_oscillator(lam, oscilator_dict):
+def multi_oscillator(wavelength, oscilator_dict):
     '''
     Computes refractive index using a combination of oscillator models
     
     Parameters
     ----------
-    lam  : ndarray or float
+    wavelength  : ndarray or float
         Wavelength range (um)
 
     oscilator_dict   : dict
@@ -534,7 +534,7 @@ def multi_oscillator(lam, oscilator_dict):
         if set(params.keys()) != set(required_params):
             raise ValueError(f"{name} model requires parameters: {required_params}")
         
-        eps += base_models[name](lam, **params)**2
+        eps += base_models[name](wavelength, **params)**2
     
     return _np.sqrt(eps)
 
@@ -787,18 +787,18 @@ def emt_brugg(fv_1,nk_1,nk_2):
     if len(eps_m) == 1: return _np.sqrt(eps_m[0])
     else :              return _np.sqrt(eps_m)
 
-def eps_real_kkr(lam, eps_imag, eps_inf = 0, int_range = (0, _np.inf), cshift=1e-12):
+def eps_real_kkr(wavelength, eps_imag, eps_inf = 0, int_range = (0, _np.inf), cshift=1e-12):
     '''
     Computes real part of dielectric constant from its imaginary components 
     using Krammers-Kronig relation
 
     Parameters
     ----------
-    lam: ndarray or float
+    wavelength: ndarray or float
          wavelength spectrum (in microns)
     
     eps_imag: ndarray, float or callable 
-              imaginary component of refractive index (if ndarray, it must be same size as lam)
+              imaginary component of refractive index (if ndarray, it must be same size as wavelength)
     
     eps_inf: float (default 0)
              dielectric constant at infinity
@@ -814,9 +814,9 @@ def eps_real_kkr(lam, eps_imag, eps_inf = 0, int_range = (0, _np.inf), cshift=1e
     eps_real: ndarray or float
               real part of dielectric constant
     '''
-    lam, lam_isfloat = _ndarray_check(lam)
+    wavelength, wavelength_isfloat = _ndarray_check(wavelength)
     cshift = complex(0, cshift)
-    w_i = _convert_units(lam,'um', 'eV')
+    w_i = _convert_units(wavelength, 'um', 'eV')
 
     if  isinstance(eps_imag, Callable):
         a, b = int_range # set integration range
@@ -829,7 +829,7 @@ def eps_real_kkr(lam, eps_imag, eps_inf = 0, int_range = (0, _np.inf), cshift=1e
         
     elif isinstance(eps_imag, _np.ndarray) or isinstance(eps_imag,float):
         eps_imag = _ndarray_check(eps_imag)[0]
-        assert lam.shape == eps_imag.shape, 'input arrays must be same length'
+        assert wavelength.shape == eps_imag.shape, 'input arrays must be same length'
     
         def integration_element(w_r):
             factor = - w_i / (w_i**2 - w_r**2 + cshift) # integration domains are swaped, so a "-"" sign is added
@@ -840,9 +840,9 @@ def eps_real_kkr(lam, eps_imag, eps_inf = 0, int_range = (0, _np.inf), cshift=1e
     
     eps_real = _np.real([integration_element(w_r) for w_r in w_i]).reshape(-1)
     
-    if lam.shape == (1,):
+    if wavelength.shape == (1,):
         return float(eps_real[0])
-    return float(eps_real[0]) if lam_isfloat else eps_real 
+    return float(eps_real[0]) if wavelength_isfloat else eps_real 
 '''
     --------------------------------------------------------------------
                             Target functions
@@ -852,73 +852,73 @@ def eps_real_kkr(lam, eps_imag, eps_inf = 0, int_range = (0, _np.inf), cshift=1e
 #------------------------------------------------------------------------------
 #                                   Inorganic
 # refractive index of SiO2 (quartz)
-# SiO2 = lambda lam: get_nkfile(lam, 'sio2_Palik_Lemarchand2013', get_from_local_path = True)[0]
-SiO2 = lambda lam: get_ri_info(lam, 'main', 'SiO2', 'Franta-25C')[0]
+# SiO2 = lambda wavelength: get_nkfile(wavelength, 'sio2_Palik_Lemarchand2013', get_from_local_path = True)[0]
+SiO2 = lambda wavelength: get_ri_info(wavelength, 'main', 'SiO2', 'Franta-25C')[0]
 
 # refractive index of Fused silica
-Silica = lambda lam: get_ri_info(lam, 'main', 'SiO2', 'Franta')[0]
+Silica = lambda wavelength: get_ri_info(wavelength, 'main', 'SiO2', 'Franta')[0]
 
 # refractive index of CaCO3
-CaCO3 = lambda lam: get_nkfile(lam, 'CaCO3_Palik', get_from_local_path = True)[0]
+CaCO3 = lambda wavelength: get_nkfile(wavelength, 'CaCO3_Palik', get_from_local_path = True)[0]
 
 # refractive index of BaSO4
-BaSO4 = lambda lam: get_nkfile(lam, 'BaSO4_Tong2022', get_from_local_path = True)[0]
+BaSO4 = lambda wavelength: get_nkfile(wavelength, 'BaSO4_Tong2022', get_from_local_path = True)[0]
 
 # refractive index of BaF2
-BaF2 = lambda lam: get_ri_info(lam, 'main', 'BaF2', 'Querry')[0]
+BaF2 = lambda wavelength: get_ri_info(wavelength, 'main', 'BaF2', 'Querry')[0]
 
 # refractive index of TiO2
-TiO2 = lambda lam: get_ri_info(lam,'main','TiO2','Siefke')[0]
+TiO2 = lambda wavelength: get_ri_info(wavelength,'main','TiO2','Siefke')[0]
 
 # refractive index of BiVO4 monoclinic (a axis)
-BiVO4_mono_a = lambda lam: get_nkfile(lam, 'BiVO4_a-c_Zhao2011', get_from_local_path = True)[0]
+BiVO4_mono_a = lambda wavelength: get_nkfile(wavelength, 'BiVO4_a-c_Zhao2011', get_from_local_path = True)[0]
 
 # refractive index of BiVO4 monoclinic (b axis)
-BiVO4_mono_b = lambda lam: get_nkfile(lam, 'BiVO4_b_Zhao2011', get_from_local_path = True)[0]
+BiVO4_mono_b = lambda wavelength: get_nkfile(wavelength, 'BiVO4_b_Zhao2011', get_from_local_path = True)[0]
 
 # refractive index of BiVO4 monoclinic (c axis)
-BiVO4_mono_c = lambda lam: get_nkfile(lam, 'BiVO4_a-c_Zhao2011', get_from_local_path = True)[0]
+BiVO4_mono_c = lambda wavelength: get_nkfile(wavelength, 'BiVO4_a-c_Zhao2011', get_from_local_path = True)[0]
 
 # average refractive index of BiVO4 monoclinic
-BiVO4 = lambda lam: (BiVO4_mono_a(lam) + BiVO4_mono_b(lam) + BiVO4_mono_c(lam))/3
+BiVO4 = lambda wavelength: (BiVO4_mono_a(wavelength) + BiVO4_mono_b(wavelength) + BiVO4_mono_c(wavelength))/3
 
 # refractive index of Cu2O
-Cu2O = lambda lam: get_nkfile(lam, 'Cu2O_Malerba2011', get_from_local_path = True)[0]
+Cu2O = lambda wavelength: get_nkfile(wavelength, 'Cu2O_Malerba2011', get_from_local_path = True)[0]
 
 # refractive index of ZnO
-ZnO = lambda lam: get_ri_info(lam,'main','ZnO','Querry')[0]
+ZnO = lambda wavelength: get_ri_info(wavelength,'main','ZnO','Querry')[0]
 
 # refractive index of MgO
-MgO = lambda lam: get_nkfile(lam,'MgO_Palik', get_from_local_path = True)[0]
+MgO = lambda wavelength: get_nkfile(wavelength,'MgO_Palik', get_from_local_path = True)[0]
 
 # refractive index of Alumina (AL2O3)
-Al2O3 = lambda lam: get_ri_info(lam,'main','Al2O3','Querry-o')[0]
+Al2O3 = lambda wavelength: get_ri_info(wavelength,'main','Al2O3','Querry-o')[0]
 
 # refractive index of ZnS
-ZnS = lambda lam: get_ri_info(lam,'main','ZnS','Querry')[0]
+ZnS = lambda wavelength: get_ri_info(wavelength,'main','ZnS','Querry')[0]
 
 # refractive index of amorphous GeSbTe (GST)
-GSTa = lambda lam: get_nkfile(lam, 'GSTa_Du2016', get_from_local_path = True)[0]
+GSTa = lambda wavelength: get_nkfile(wavelength, 'GSTa_Du2016', get_from_local_path = True)[0]
 
 # refractive index of crystaline GeSbTe (GST)
-GSTc = lambda lam: get_nkfile(lam, 'GSTc_Du2016', get_from_local_path = True)[0]
+GSTc = lambda wavelength: get_nkfile(wavelength, 'GSTc_Du2016', get_from_local_path = True)[0]
 
 # refractive index of Monoclinic(cold) Vanadium Dioxide (VO2M)
 # sputtered on SiO2 by default (film2)
-VO2M = lambda lam, film = 2: get_nkfile(lam, 'VO2M_Wan2019(film%i)' % film, get_from_local_path = True)[0]
+VO2M = lambda wavelength, film = 2: get_nkfile(wavelength, 'VO2M_Wan2019(film%i)' % film, get_from_local_path = True)[0]
 
 # refractive index of Rutile(hot) Vanadium Dioxide (VO2R)
 # sputtered on SiO2 by default (film2)
-VO2R = lambda lam, film = 2: get_nkfile(lam, 'VO2R_Wan2019(film%i)' % film, get_from_local_path = True)[0]
+VO2R = lambda wavelength, film = 2: get_nkfile(wavelength, 'VO2R_Wan2019(film%i)' % film, get_from_local_path = True)[0]
 
-def VO2(lam,T, film=2 , Tphc = 73, WT = 3.1):
+def VO2(wavelength, T, film=2 , Tphc = 73, WT = 3.1):
     '''
     Refractive index of temperatura dependent VO2.
     Reference: Wan, C. et al. Ann. Phys. 531, 1900188 (2019).
 
     Parameters
     ----------
-    lam : ndarray
+    wavelength : ndarray
         Wavelength range (um).
     T : float
         Temperature of VO2 (°C).
@@ -944,48 +944,48 @@ def VO2(lam,T, film=2 , Tphc = 73, WT = 3.1):
     T = T + 273         # convert °C to K
     
     fv = 1/(1 + _np.exp(WT/kB*(1/T - 1/Tphc)))
-    eps_c = VO2M(lam,film)**2
-    eps_h = VO2R(lam,film)**2
+    eps_c = VO2M(wavelength, film)**2
+    eps_h = VO2R(wavelength, film)**2
     
     eps = (1 - fv)*eps_c + fv*eps_h
     
     return _np.sqrt(eps)
 
 # refractive index of Silicon
-Si   = lambda lam: get_ri_info(lam, 'main', 'Si', 'Franta-300K')[0]
+Si   = lambda wavelength: get_ri_info(wavelength, 'main', 'Si', 'Franta-300K')[0]
 
 #------------------------------------------------------------------------------
 #                                   Metals
 # refractive index of Gold
-gold = lambda lam: get_nkfile(lam, 'au_Olmon2012_evap', get_from_local_path = True)[0]
+gold = lambda wavelength: get_nkfile(wavelength, 'au_Olmon2012_evap', get_from_local_path = True)[0]
 
 # refractive index of Silver
-silver = lambda lam: get_nkfile(lam, 'ag_Ciesielski2017', get_from_local_path = True)[0]
+silver = lambda wavelength: get_nkfile(wavelength, 'ag_Ciesielski2017', get_from_local_path = True)[0]
 
 # refractive index of Copper
-Cu   = lambda lam: get_nkfile(lam, 'cu_Babar2015', get_from_local_path = True)[0]
+Cu   = lambda wavelength: get_nkfile(wavelength, 'cu_Babar2015', get_from_local_path = True)[0]
 
 # refractive index of Aluminium
-Al   = lambda lam: get_nkfile(lam, 'al_Rakic1995', get_from_local_path = True)[0]
+Al   = lambda wavelength: get_nkfile(wavelength, 'al_Rakic1995', get_from_local_path = True)[0]
 
 # refractive index of Magnesium
-Mg   = lambda lam: get_ri_info(lam, 'main', 'Mg', 'Hagemann')[0]
+Mg   = lambda wavelength: get_ri_info(wavelength, 'main', 'Mg', 'Hagemann')[0]
 
 #------------------------------------------------------------------------------
 #                                   Polymers
 # refractive index of HDPE
-HDPE  = lambda lam: get_nkfile(lam, 'HDPE_Palik', get_from_local_path = True)[0]
+HDPE  = lambda wavelength: get_nkfile(wavelength, 'HDPE_Palik', get_from_local_path = True)[0]
 
 # refractive index of HDPE
-PDMS  = lambda lam: get_nkfile(lam, 'PDMS_Zhang2020_Querry1987', get_from_local_path = True)[0]
+PDMS  = lambda wavelength: get_nkfile(wavelength, 'PDMS_Zhang2020_Querry1987', get_from_local_path = True)[0]
 
 # refractive index of PMMA
-PMMA = lambda lam: get_ri_info(lam,'organic','(C5H8O2)n - poly(methyl methacrylate)','Zhang-Tomson')[0]
+PMMA = lambda wavelength: get_ri_info(wavelength,'organic','(C5H8O2)n - poly(methyl methacrylate)','Zhang-Tomson')[0]
 
 # refractive index of PVDF-HFP
-PVDF  = lambda lam: get_nkfile(lam, 'PVDF-HFP_Mandal2018', get_from_local_path = True)[0]
+PVDF  = lambda wavelength: get_nkfile(wavelength, 'PVDF-HFP_Mandal2018', get_from_local_path = True)[0]
 
 #------------------------------------------------------------------------------
 #                                   Others
 # refractive index of water
-H2O  = lambda lam: get_nkfile(lam, 'h2o_Hale1973', get_from_local_path = True)[0]
+H2O  = lambda wavelength: get_nkfile(wavelength, 'h2o_Hale1973', get_from_local_path = True)[0]

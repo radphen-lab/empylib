@@ -11,12 +11,12 @@ hbar = 1.0545718E-34            # J*s (plank's constan)
 speed_of_light = 299792458      # m/s (speed of light)
 kBoltzmann = 1.38064852E-23     # J/K (Boltzman constant)
 
-def _as_carray(x, name, nlam, val_type = complex):
+def _as_carray(x, name, n_wavelengths, val_type = complex):
         arr = _np.asarray(x)
         if arr.ndim == 0:
-            return _np.full(nlam, val_type(arr), dtype=val_type)
-        if arr.shape != (nlam,):
-            raise ValueError(f"{name} must be scalar or have shape (len(lam),).")
+            return _np.full(n_wavelengths, val_type(arr), dtype=val_type)
+        if arr.shape != (n_wavelengths,):
+            raise ValueError(f"{name} must be scalar or have shape (len(wavelength),).")
         return arr.astype(val_type)
 
 def _as_1d_array(x, name, dtype=None):
@@ -53,25 +53,25 @@ def _as_float_list(x, name, *, nonnegative=False):
         return []
     return [float(v) for v in _as_real_array(x, name, nonnegative=nonnegative)]
 
-def _normalize_multilayer_inputs(lam, thickness, N_layers, *, N_above=1.0, N_below=1.0):
+def _normalize_multilayer_inputs(wavelength, thickness, N_layers, *, N_above=1.0, N_below=1.0):
     """
     Normalize multilayer wave-optics inputs to the same scalar-or-spectrum style
     used elsewhere in the package.
 
     Returns
     -------
-    lam : ndarray
+    wavelength : ndarray
         1D wavelength array [um].
     thicknesses : list[float]
         One thickness per finite layer [um].
     N_layers : list[ndarray]
         One complex spectral refractive-index array per finite layer.
     N_above_arr : ndarray
-        Upper semi-infinite medium refractive index with shape (len(lam),).
+        Upper semi-infinite medium refractive index with shape (len(wavelength),).
     N_below_arr : ndarray
-        Lower semi-infinite medium refractive index with shape (len(lam),).
+        Lower semi-infinite medium refractive index with shape (len(wavelength),).
     """
-    lam_arr = _as_real_array(lam, "lam", positive=True)
+    wavelength_arr = _as_real_array(wavelength, "wavelength", positive=True)
     if thickness is None:
         dL = []
     else:
@@ -80,7 +80,7 @@ def _normalize_multilayer_inputs(lam, thickness, N_layers, *, N_above=1.0, N_bel
             dL = []
         else:
             dL = _as_float_list(thickness, "thickness", nonnegative=True)
-    nlam = lam_arr.size
+    n_wavelengths = wavelength_arr.size
 
     if N_layers is None:
         layer_inputs = []
@@ -110,13 +110,13 @@ def _normalize_multilayer_inputs(lam, thickness, N_layers, *, N_above=1.0, N_bel
         raise ValueError("len(N_layers) must be equal to len(thickness).")
 
     nL = [
-        _as_carray(layer_ni, f"N_layers[{i}]", nlam, val_type=complex)
+        _as_carray(layer_ni, f"N_layers[{i}]", n_wavelengths, val_type=complex)
         for i, layer_ni in enumerate(layer_inputs)
     ]
-    n0 = _as_carray(N_above, "N_above", nlam, val_type=complex)
-    nS = _as_carray(N_below, "N_below", nlam, val_type=complex)
+    n0 = _as_carray(N_above, "N_above", n_wavelengths, val_type=complex)
+    nS = _as_carray(N_below, "N_below", n_wavelengths, val_type=complex)
 
-    return lam_arr, dL, nL, n0, nS
+    return wavelength_arr, dL, nL, n0, nS
 
 def _ndarray_check(x):
     '''
@@ -301,27 +301,27 @@ def _local_to_global_angles(theta_i, phi_i, beta_tilt, phi_tilt, restrict_to_upp
         return theta.item(), phi.item()
     return theta, phi
 
-def _check_mie_inputs(lam=None, N_host=None, Np_shells=None, D=None, *, size_dist=None):
+def _check_mie_inputs(wavelength=None, N_host=None, Np_shells=None, D=None, *, size_dist=None):
     """
     Validate and normalize inputs for Mie / multilayer-sphere calculations.
 
     Parameters
     ----------
-    lam : float or (nλ,) array-like of float, optional
-        Wavelength(s) in micrometers (µm). If array-like, must be 1D with lam > 0.
+    wavelength : float or (nλ,) array-like of float, optional
+        Wavelength(s) in micrometers (µm). If array-like, must be 1D with wavelength > 0.
         If omitted (None), spectral refractive indices cannot be used (only scalars allowed).
     N_host : complex or (nλ,) array-like of complex, optional
-        Host refractive index. If array-like, length must equal len(lam).
-        If scalar, it is broadcast to (nλ,). If lam is None and N_host is array-like, error.
+        Host refractive index. If array-like, length must equal len(wavelength).
+        If scalar, it is broadcast to (nλ,). If wavelength is None and N_host is array-like, error.
     Np_shells : scalar complex, (nλ,) array-like of complex, list/tuple of those,
                 or (n_layers, nλ) ndarray, optional
         Refractive index for each shell layer.
         Accepted forms:
           - scalar (single-layer, constant with λ)
-          - 1D array (single-layer spectrum, length = len(lam))
-          - list/tuple of scalars/1D arrays (one per layer; arrays must match len(lam))
+          - 1D array (single-layer spectrum, length = len(wavelength))
+          - list/tuple of scalars/1D arrays (one per layer; arrays must match len(wavelength))
           - 2D ndarray shaped (n_layers, nλ)
-        If arrays are provided but lam is None, error.
+        If arrays are provided but wavelength is None, error.
     D : float, array-like, or list of those, optional
         Outer diameter(s) per layer (µm). Semantics:
           - float: single-layer, monodisperse
@@ -338,7 +338,7 @@ def _check_mie_inputs(lam=None, N_host=None, Np_shells=None, D=None, *, size_dis
 
     Returns
     -------
-    lam_out : (nλ,) ndarray of float or None
+    wavelength_out : (nλ,) ndarray of float or None
     N_host_out : (nλ,) ndarray of complex or None
     Np_out : (n_layers, nλ) ndarray of complex or None
         Layers ordered inner→outer. If D is provided, rows are reordered accordingly.
@@ -352,18 +352,18 @@ def _check_mie_inputs(lam=None, N_host=None, Np_shells=None, D=None, *, size_dis
     - If both D and Np_shells are provided, their number of layers must match.
     - For polydisperse `D`, omitted `size_dist` defaults to uniform weights.
     """
-    # ---- lam ----
-    if lam is None:
-        lam_out = None
+    # ---- wavelength ----
+    if wavelength is None:
+        wavelength_out = None
     else:
-        lam_arr = _np.asarray(lam, dtype=float).ravel()
-        if lam_arr.ndim != 1 or lam_arr.size == 0:
-            raise ValueError("lam must be a 1D array (non-empty) or a scalar.")
-        if not _np.all(_np.isfinite(lam_arr)) or _np.any(lam_arr <= 0):
-            raise ValueError("All wavelengths in lam must be finite and > 0 (µm).")
-        lam_out = lam_arr
+        wavelength_arr = _np.asarray(wavelength, dtype=float).ravel()
+        if wavelength_arr.ndim != 1 or wavelength_arr.size == 0:
+            raise ValueError("wavelength must be a 1D array (non-empty) or a scalar.")
+        if not _np.all(_np.isfinite(wavelength_arr)) or _np.any(wavelength_arr <= 0):
+            raise ValueError("All wavelengths in wavelength must be finite and > 0 (µm).")
+        wavelength_out = wavelength_arr
 
-    nlam = None if lam_out is None else lam_out.size
+    n_wavelengths = None if wavelength_out is None else wavelength_out.size
 
     def _infer_layer_count(x):
         if x is None:
@@ -477,22 +477,22 @@ def _check_mie_inputs(lam=None, N_host=None, Np_shells=None, D=None, *, size_dis
         def to_layer_array(x):
             xa = _np.asarray(x)
             if xa.ndim == 0:  # scalar
-                if nlam is None:
+                if n_wavelengths is None:
                     return _np.array([complex(xa)], dtype=complex)
-                return _np.full(nlam, complex(xa), dtype=complex)
+                return _np.full(n_wavelengths, complex(xa), dtype=complex)
             arr = _np.asarray(xa, dtype=complex).ravel()
-            if lam_out is None:
-                print('No lam provided, but spectral Np_shells given. Ignoring spectral shape.')
-            elif arr.size != nlam:
-                raise ValueError(f"A spectral layer has length {arr.size}, expected len(lam)={nlam}.")
+            if wavelength_out is None:
+                print('No wavelength provided, but spectral Np_shells given. Ignoring spectral shape.')
+            elif arr.size != n_wavelengths:
+                raise ValueError(f"A spectral layer has length {arr.size}, expected len(wavelength)={n_wavelengths}.")
             return arr
 
         if isinstance(Np_shells, (list, tuple)):
             if len(Np_shells) == 0:
                 raise ValueError("Np_shells list cannot be empty.")
             layers = [to_layer_array(x) for x in Np_shells]
-            if nlam is not None and any(arr.size != nlam for arr in layers):
-                raise ValueError("All spectral layers in Np_shells must have length len(lam).")
+            if n_wavelengths is not None and any(arr.size != n_wavelengths for arr in layers):
+                raise ValueError("All spectral layers in Np_shells must have length len(wavelength).")
             Np_out = _np.vstack([arr.reshape(1, -1) for arr in layers]).astype(complex)
         else:
             arr = _np.asarray(Np_shells)
@@ -501,10 +501,10 @@ def _check_mie_inputs(lam=None, N_host=None, Np_shells=None, D=None, *, size_dis
             elif arr.ndim == 1:
                 Np_out = to_layer_array(arr).reshape(1, -1)
             elif arr.ndim == 2:
-                if lam_out is None:
-                    raise ValueError("2D Np_shells provided but lam is None. Provide lam.")
-                if arr.shape[1] != nlam:
-                    raise ValueError(f"Np_shells second dimension must equal len(lam)={nlam}.")
+                if wavelength_out is None:
+                    raise ValueError("2D Np_shells provided but wavelength is None. Provide wavelength.")
+                if arr.shape[1] != n_wavelengths:
+                    raise ValueError(f"Np_shells second dimension must equal len(wavelength)={n_wavelengths}.")
                 if not _np.all(_np.isfinite(arr)):
                     raise ValueError("Np_shells contains non-finite values.")
                 Np_out = arr.astype(complex)
@@ -522,16 +522,16 @@ def _check_mie_inputs(lam=None, N_host=None, Np_shells=None, D=None, *, size_dis
     N_host_out = None
     if N_host is not None:
         if _np.isscalar(N_host):
-            if nlam is None:
+            if n_wavelengths is None:
                 N_host_out = _np.array([complex(N_host)], dtype=complex)
             else:
-                N_host_out = _np.full(nlam, complex(N_host), dtype=complex)
+                N_host_out = _np.full(n_wavelengths, complex(N_host), dtype=complex)
         else:
-            if lam_out is None:
-                raise ValueError("Spectral N_host provided but lam is None. Provide lam.")
+            if wavelength_out is None:
+                raise ValueError("Spectral N_host provided but wavelength is None. Provide wavelength.")
             arr = _np.asarray(N_host, dtype=complex).ravel()
-            if arr.size != nlam:
-                raise ValueError(f"N_host length must equal len(lam)={nlam}.")
+            if arr.size != n_wavelengths:
+                raise ValueError(f"N_host length must equal len(wavelength)={n_wavelengths}.")
             N_host_out = arr
 
     # ---- size_dist (normalize & validate) ----
@@ -571,7 +571,7 @@ def _check_mie_inputs(lam=None, N_host=None, Np_shells=None, D=None, *, size_dis
                 size_dist_out = sd / s
 
     # ---- Final NaN/Inf guards ----
-    for name, arr in [("lam", lam_out), ("N_host", N_host_out), ("Np_shells", Np_out)]:
+    for name, arr in [("wavelength", wavelength_out), ("N_host", N_host_out), ("Np_shells", Np_out)]:
         if arr is None:
             continue
         if not _np.all(_np.isfinite(arr)):
@@ -582,7 +582,7 @@ def _check_mie_inputs(lam=None, N_host=None, Np_shells=None, D=None, *, size_dis
             if not _np.all(_np.isfinite(a)):
                 raise ValueError("D contains non-finite values.")
 
-    return lam_out, N_host_out, Np_out, D_out, size_dist_out
+    return wavelength_out, N_host_out, Np_out, D_out, size_dist_out
 
 def _check_theta(theta: _Optional[_Union[float, _np.ndarray]],
                  n_theta: int = 181) -> _np.ndarray:
