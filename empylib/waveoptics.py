@@ -7,8 +7,8 @@ Created on Sun Nov  7 17:25:53 2021
 @author: PanxoPanza
 """
 
-import numpy as np
-from .utils import _as_1d_array, _as_carray, _as_real_array, _normalize_multilayer_inputs
+import numpy as _np
+from .utils import _as_1d_array, _normalize_multilayer_inputs
 
 
 def _resolve_polarization(polarization):
@@ -98,22 +98,23 @@ def interface(N_above, N_below, *, aoi = 0, polarization=False):
     '''
     # Normalize inputs to 1D spectral/angle arrays.
     th = _as_1d_array(aoi, 'aoi', dtype=complex)
-    th_scalar = np.isscalar(aoi)
+    if _np.any(aoi) > _np.pi/2:
+        raise ValueError("aoi > pi/2")
 
-    n1_raw = np.asarray(N_above)
-    n2_raw = np.asarray(N_below)
+    n1_raw = _np.asarray(N_above)
+    n2_raw = _np.asarray(N_below)
     ns = max(n1_raw.size if n1_raw.ndim else 1, n2_raw.size if n2_raw.ndim else 1)
-    n1 = _as_carray(N_above, 'N_above', ns, val_type=complex)
-    n2 = _as_carray(N_below, 'N_below', ns, val_type=complex)
+    n1 = _as_1d_array(N_above, 'N_above', n_wavelengths=ns, dtype=complex)
+    n2 = _as_1d_array(N_below, 'N_below', n_wavelengths=ns, dtype=complex)
 
     # Build angle x wavelength grids for vectorized Fresnel computation.
-    n_i, th_grid = np.meshgrid(n1, th)
-    n_t = np.meshgrid(n2, th)[0]
+    n_i, th_grid = _np.meshgrid(n1, th)
+    n_t = _np.meshgrid(n2, th)[0]
 
-    sin_i = np.sin(th_grid)
-    cos_i = np.cos(th_grid)
+    sin_i = _np.sin(th_grid)
+    cos_i = _np.cos(th_grid)
     sin_t = n_i * sin_i / n_t
-    cos_t = np.sqrt(1 - sin_t**2)
+    cos_t = _np.sqrt(1 - sin_t**2)
 
     # Determine which polarization(s) to compute based on input.
     pols = _resolve_polarization(polarization)
@@ -124,21 +125,21 @@ def interface(N_above, N_below, *, aoi = 0, polarization=False):
         if p == 'TM':
             r = (n_i * cos_t - n_t * cos_i) / (n_i * cos_t + n_t * cos_i)
             t = (2 * n_i * cos_i) / (n_i * cos_t + n_t * cos_i)
-            R = np.abs(r * np.conj(r))
-            T = np.abs(
-                np.real(np.conj(n_t) * cos_t) * t * np.conj(t)
-                / np.real(np.conj(n_i) * cos_i)
+            R = _np.abs(r * _np.conj(r))
+            T = _np.abs(
+                _np.real(_np.conj(n_t) * cos_t) * t * _np.conj(t)
+                / _np.real(_np.conj(n_i) * cos_i)
             )
         elif p == 'TE':
             r = (n_i * cos_i - n_t * cos_t) / (n_i * cos_i + n_t * cos_t)
             t = (2 * n_i * cos_i) / (n_i * cos_i + n_t * cos_t)
-            R = np.abs(r * np.conj(r))
-            T = np.abs(
-                np.real(n_t * cos_t) * t * np.conj(t)
-                / np.real(n_i * cos_i)
+            R = _np.abs(r * _np.conj(r))
+            T = _np.abs(
+                _np.real(n_t * cos_t) * t * _np.conj(t)
+                / _np.real(n_i * cos_i)
             )
 
-        if th_scalar:
+        if len(th) == 1:
             out[p] = (
                 R.reshape(-1,),
                 T.reshape(-1,),
@@ -223,9 +224,9 @@ def multilayer(
 
     # Gracefully handle the no-layer case as a single interface calculation.
     if N_layers is None or (
-        isinstance(N_layers, (list, tuple, np.ndarray)) and len(N_layers) == 0
+        isinstance(N_layers, (list, tuple, _np.ndarray)) and len(N_layers) == 0
     ):
-        _, _, _, n0, nS = _assert_multilayer_input(
+        _, _, _, n0, nS = _normalize_multilayer_inputs(
             wavelength,
             [],
             [],
@@ -235,25 +236,26 @@ def multilayer(
         return interface(n0, nS, aoi=aoi, polarization=polarization)
 
     # Validate and standardize multilayer inputs to spectral arrays.
-    wl, dL, nL, n0, nS = _assert_multilayer_input(
+    wl, dL, nL, n0, nS = _normalize_multilayer_inputs(
         wavelength, thickness, N_layers, N_above=N_above, N_below=N_below
     )
     th = _as_1d_array(aoi, 'aoi', dtype=complex)
-    th_scalar = np.isscalar(aoi)
+    if _np.any(aoi) > _np.pi/2:
+        raise ValueError("aoi > pi/2")
 
     # Vacuum impedance and free-space wavenumber.
     z0 = 376.730
-    k0 = 2 * np.pi / wl
+    k0 = 2 * _np.pi / wl
 
-    k_grid, th_grid = np.meshgrid(k0, th)
-    n0_grid = np.meshgrid(n0, th)[0]
-    nS_grid = np.meshgrid(nS, th)[0]
+    k_grid, th_grid = _np.meshgrid(k0, th)
+    n0_grid = _np.meshgrid(n0, th)[0]
+    nS_grid = _np.meshgrid(nS, th)[0]
 
-    s0 = np.sin(th_grid)
-    c0 = np.sqrt(1 - s0**2) + 1e-15
+    s0 = _np.sin(th_grid)
+    c0 = _np.sqrt(1 - s0**2) + 1e-15
 
     sS = n0_grid * s0 / nS_grid
-    cS = np.sqrt(1 - sS**2) + 1e-15
+    cS = _np.sqrt(1 - sS**2) + 1e-15
 
     # Resolve polarization mode: TE, TM, or both for unpolarized light.
     pols = _resolve_polarization(polarization)
@@ -284,9 +286,9 @@ def multilayer(
 
     # Multiply characteristic matrix of each finite layer.
     for n_j, d_j in zip(nL, dL):
-        n_j_grid = np.meshgrid(n_j, th)[0]
+        n_j_grid = _np.meshgrid(n_j, th)[0]
         s_j = n0_grid * s0 / n_j_grid
-        c_j = np.sqrt(1 - s_j**2) + 1e-10
+        c_j = _np.sqrt(1 - s_j**2) + 1e-10
         phi = n_j_grid * k_grid * c_j * d_j
 
         for p in pols:
@@ -300,10 +302,10 @@ def multilayer(
             M21 = M21_map[p]
             M22 = M22_map[p]
 
-            N11 = np.cos(phi) * M11 - 1j / q_j * np.sin(phi) * M12
-            N12 = -1j * q_j * np.sin(phi) * M11 + np.cos(phi) * M12
-            N21 = np.cos(phi) * M21 - 1j / q_j * np.sin(phi) * M22
-            N22 = -1j * q_j * np.sin(phi) * M21 + np.cos(phi) * M22
+            N11 = _np.cos(phi) * M11 - 1j / q_j * _np.sin(phi) * M12
+            N12 = -1j * q_j * _np.sin(phi) * M11 + _np.cos(phi) * M12
+            N21 = _np.cos(phi) * M21 - 1j / q_j * _np.sin(phi) * M22
+            N22 = -1j * q_j * _np.sin(phi) * M21 + _np.cos(phi) * M22
 
             M11_map[p] = N11
             M12_map[p] = N12
@@ -326,13 +328,13 @@ def multilayer(
         r = nr / dr
         t = (2 * tf * qS) / dr
 
-        R = np.abs(r) ** 2
+        R = _np.abs(r) ** 2
         if p == 'TE':
-            T = np.real(nS_grid * cS) / np.real(n0_grid * c0) * np.abs(t) ** 2
+            T = _np.real(nS_grid * cS) / _np.real(n0_grid * c0) * _np.abs(t) ** 2
         else:
-            T = np.real(np.conj(nS_grid) * cS) / np.real(np.conj(n0_grid) * c0) * np.abs(t) ** 2
+            T = _np.real(_np.conj(nS_grid) * cS) / _np.real(_np.conj(n0_grid) * c0) * _np.abs(t) ** 2
 
-        if th_scalar:
+        if len(th) == 1:
             out[p] = (
                 R.reshape(-1,),
                 T.reshape(-1,),
@@ -414,11 +416,11 @@ def incoh_multilayer(
 
     # Resolve polarization mode and validate all spectral inputs.
     pols = _resolve_polarization(polarization)
-    wl, dL, nL, n0, nS = _assert_multilayer_input(
+    wl, dL, nL, n0, nS = _normalize_multilayer_inputs(
         wavelength, thickness, N_layers, N_above=N_above, N_below=N_below
     )
 
-    if not np.isscalar(aoi):
+    if not _np.isscalar(aoi):
         raise ValueError('aoi must be a scalar for incoh_multilayer')
     if coh_length < 0:
         raise ValueError('coh_length must be non-negative')
@@ -427,8 +429,8 @@ def incoh_multilayer(
     lc = float(coh_length)
 
     # Mark layers as incoherent when optical path exceeds coherence length.
-    d_arr = np.asarray(dL, dtype=float)
-    inc_mask = d_arr > lc * np.cos(th0) / 2
+    d_arr = _np.asarray(dL, dtype=float)
+    inc_mask = d_arr > lc * _np.cos(th0) / 2
 
     n_all = [n0] + nL + [nS]
     seg_n = [n_all[0]]
@@ -440,7 +442,7 @@ def incoh_multilayer(
     T21_map = {p: 0 for p in pols}
     T22_map = {p: 1 for p in pols}
 
-    th_start = th0 * np.ones(len(wl))
+    th_start = th0 * _np.ones(len(wl))
     # Traverse layers, splitting into coherent sub-stacks between incoherent layers.
     for j, is_inc in enumerate(inc_mask):
         if is_inc:
@@ -452,8 +454,8 @@ def incoh_multilayer(
             th_end = coh[pols[0]][4]
 
             # In incoherent layers, only attenuation survives (random phase averaging).
-            phi_d = (2* np.pi / wl * n_all[j + 1] * np.cos(th_end) * dL[j])
-            att = np.exp(-2 * phi_d.imag)
+            phi_d = (2* _np.pi / wl * n_all[j + 1] * _np.cos(th_end) * dL[j])
+            att = _np.exp(-2 * phi_d.imag)
             att = att * (att >= 1e-30) + (att < 1e-30) * 1e-30
 
             P11 = 1 / att
@@ -496,11 +498,11 @@ def incoh_multilayer(
         T = 1 / A11
 
         if p == 'TE':
-            T = np.real(n_all[-1] * np.cos(th_end)) / np.real(n_all[0] * np.cos(th0)) * T
+            T = _np.real(n_all[-1] * _np.cos(th_end)) / _np.real(n_all[0] * _np.cos(th0)) * T
         else:
             T = (
-                np.real(np.conj(n_all[-1]) * np.cos(th_end))
-                / np.real(np.conj(n_all[0]) * np.cos(th0))
+                _np.real(_np.conj(n_all[-1]) * _np.cos(th_end))
+                / _np.real(_np.conj(n_all[0]) * _np.cos(th0))
                 * T
             )
 
@@ -509,60 +511,6 @@ def incoh_multilayer(
     if len(pols) == 1:
         return out[pols[0]]
     return _unpolarized_output(out['TE'], out['TM'])
-
-def _assert_multilayer_input(wavelength, thickness, N_layers, *, N_above=1.0, N_below=1.0):
-    '''
-    Verify that multilayer input complies with required dimensions
-
-    Parameters
-    ----------
-    wavelength : float or ndarray
-        wavelength range (microns)
-        
-    thickness : list or float
-        Thickness of each finite layer in microns. Must contain float values.
-        A single float is allowed for a single-layer case.
-        
-    N_layers : float, ndarray, or list
-        Refractive index of each finite layer. It can be:
-        - a single float (single-layer, wavelength-independent),
-        - a single 1D ndarray (single-layer, wavelength-dependent),
-        - a list of floats,
-        - or a mixed list of floats and 1D ndarrays, where each ndarray has
-          size len(wavelength).
-
-    N_above : float or ndarray, optional
-        Refractive index of the semi-infinite medium above.
-
-    N_below : float or ndarray, optional
-        Refractive index of the semi-infinite medium below.
-
-    Returns
-    -------
-    wavelength : ndarray
-        Wavelength range (microns).
-
-    thicknesses : list
-        Thickness of each layer in microns.
-
-    N_layers : list
-        Finite-layer refractive indices as ndarrays of size len(wavelength).
-
-    N_above_arr : ndarray
-        Upper semi-infinite medium refractive index as ndarray of size len(wavelength).
-
-    N_below_arr : ndarray
-        Lower semi-infinite medium refractive index as ndarray of size len(wavelength).
-
-    '''
-    # Wavelength must be positive and represented as 1D array.
-    return _normalize_multilayer_inputs(
-        wavelength,
-        thickness,
-        N_layers,
-        N_above=N_above,
-        N_below=N_below,
-    )
 
 def _TMMcoh(wavelength, aoi, N_layers, thickness, polarization):
     '''
@@ -599,11 +547,11 @@ def _TMMcoh(wavelength, aoi, N_layers, thickness, polarization):
     d_b.reverse()
     
     # Iterate wavelength-by-wavelength to evaluate forward and reverse stacks.
-    th_end = np.zeros(len(wavelength), dtype=complex)
-    r_f = np.zeros(len(wavelength), dtype=complex)
-    t_f = np.zeros(len(wavelength), dtype=complex)
-    r_b = np.zeros(len(wavelength), dtype=complex)
-    t_b = np.zeros(len(wavelength), dtype=complex)
+    th_end = _np.zeros(len(wavelength), dtype=complex)
+    r_f = _np.zeros(len(wavelength), dtype=complex)
+    t_f = _np.zeros(len(wavelength), dtype=complex)
+    r_b = _np.zeros(len(wavelength), dtype=complex)
+    t_b = _np.zeros(len(wavelength), dtype=complex)
 
     for i in range(len(wavelength)):
         # Snell propagation to final medium angle for this wavelength.
@@ -639,12 +587,12 @@ def _TMMcoh(wavelength, aoi, N_layers, thickness, polarization):
             polarization=polarization
         )[-2:]
 
-    T11_coh = 1 / np.abs(t_f) ** 2
-    T12_coh = -np.abs(r_b) ** 2 / np.abs(t_f) ** 2
-    T21_coh = np.abs(r_f) ** 2 / np.abs(t_f) ** 2
+    T11_coh = 1 / _np.abs(t_f) ** 2
+    T12_coh = -_np.abs(r_b) ** 2 / _np.abs(t_f) ** 2
+    T21_coh = _np.abs(r_f) ** 2 / _np.abs(t_f) ** 2
     T22_coh = (
-        np.abs(t_f * t_b) ** 2 - np.abs(r_f * r_b) ** 2
-    ) / np.abs(t_f) ** 2
+        _np.abs(t_f * t_b) ** 2 - _np.abs(r_f * r_b) ** 2
+    ) / _np.abs(t_f) ** 2
     return T11_coh, T12_coh, T21_coh, T22_coh, th_end
 
 
@@ -698,7 +646,7 @@ def _is_forward_angle(n, theta):
         assert (n * cos(theta.conjugate())).real < 100 * EPSILON, error_string
     return answer
 
-@np.vectorize
+@_np.vectorize
 def snell(n_1, n_2, th_1):
     """
     return angle theta in layer 2 with refractive index n_2, assuming
@@ -708,11 +656,11 @@ def snell(n_1, n_2, th_1):
     from numpy.lib.scimath import arcsin
     # Important that the arcsin here is numpy.lib.scimath.arcsin, not
     # numpy.arcsin! (They give different results e.g. for arcsin(2).)
-    th_2_guess = arcsin(n_1*np.sin(th_1) / n_2)
+    th_2_guess = arcsin(n_1*_np.sin(th_1) / n_2)
     if _is_forward_angle(n_2, th_2_guess):
         return th_2_guess
     else:
-        return np.pi - th_2_guess
+        return _np.pi - th_2_guess
 
 def _list_snell(n_list, th_0):
     """
@@ -723,11 +671,11 @@ def _list_snell(n_list, th_0):
     from numpy.lib.scimath import arcsin
     # Important that the arcsin here is numpy.lib.scimath.arcsin, not
     # numpy.arcsin! (They give different results e.g. for arcsin(2).)
-    angles = arcsin(n_list[0]*np.sin(th_0) / n_list)
+    angles = arcsin(n_list[0]*_np.sin(th_0) / n_list)
     # The first and last entry need to be the forward angle (the intermediate
     # layers don't matter, see https://arxiv.org/abs/1603.02720 Section 5)
     if not _is_forward_angle(n_list[0], angles[0]):
-        angles[0] = np.pi - angles[0]
+        angles[0] = _np.pi - angles[0]
     if not _is_forward_angle(n_list[-1], angles[-1]):
-        angles[-1] = np.pi - angles[-1]
+        angles[-1] = _np.pi - angles[-1]
     return angles

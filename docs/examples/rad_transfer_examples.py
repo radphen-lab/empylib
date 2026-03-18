@@ -17,15 +17,15 @@ def beer_lambert_demo():
     nh = 1.49 + 0.00j + 0 * lam
     npart = 2.35 + 0.02j + 0 * lam
     result = rt.T_beer_lambert(
-        lam,
-        nh,
-        npart,
-        0.30,
+        wavelength = lam,
+        N_host = nh,
+        N_particle = npart,
+        D = 0.30,
         fv=0.06,
-        tfilm=0.50,
-        theta=8.0,
-        Nup=1.00,
-        Ndw=1.52,
+        thickness=0.50,
+        aoi=np.radians(8.0),
+        N_above=1.00,
+        N_below=1.52,
     )
 
     styles, labels = rt_style_mapper(result)
@@ -51,9 +51,9 @@ def adm_sphere_demo():
         npart,
         0.30,
         fv=0.06,
-        tfilm=0.50,
-        Nup=1.00,
-        Ndw=1.52,
+        thickness=0.50,
+        N_above=1.00,
+        N_below=1.52,
         dependent_scatt=False,
         effective_medium=True,
         use_phase_fun=False,
@@ -80,13 +80,13 @@ def adm_comparison_demo():
 
     result_g = rt.adm(
         lam,
-        tfilm=0.30,
+        thickness=0.30,
         k_sca=k_sca,
         k_abs=k_abs,
-        Nh=nh,
+        N_host=nh,
         gcos=gcos,
-        Nup=1.00,
-        Ndw=1.52,
+        N_above=1.00,
+        N_below=1.52,
     )
 
     phase_fun = mie.phase_scatt_HG(
@@ -97,13 +97,13 @@ def adm_comparison_demo():
     )
     result_pf = rt.adm(
         lam,
-        tfilm=0.30,
+        thickness=0.30,
         k_sca=k_sca,
         k_abs=k_abs,
-        Nh=nh,
+        N_host=nh,
         phase_fun=phase_fun,
-        Nup=1.00,
-        Ndw=1.52,
+        N_above=1.00,
+        N_below=1.52,
     )
 
     fig, ax = plt.subplots(figsize=(7, 3))

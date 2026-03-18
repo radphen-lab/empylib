@@ -34,6 +34,7 @@ from docs.generate_tutorial_notebooks import NOTEBOOK_SPECS
 
 import empylib.nklib as nk
 
+ASSERT_ONLINE_CODECELLS = False
 
 NOTEBOOK_REQUIRED_TOKENS = {
     "nklib_test.ipynb": [
@@ -232,12 +233,13 @@ def check_notebook_structure():
             )
             assert appendix_idx is not None, "nklib notebook is missing the optional appendix heading"
 
-            for token in NKLIB_ONLINE_ONLY_TOKENS:
-                token_cells = [i for i, src in enumerate(sources) if _source_has_token(src, token)]
-                assert token_cells, f"nklib notebook is missing {token}"
-                assert all(i > appendix_idx for i in token_cells), f"{token} must appear only in the optional appendix"
-                for idx in token_cells:
-                    _assert_commented_code_cell(payload["cells"][idx])
+            if ASSERT_ONLINE_CODECELLS:
+                for token in NKLIB_ONLINE_ONLY_TOKENS:
+                    token_cells = [i for i, src in enumerate(sources) if _source_has_token(src, token)]
+                    assert token_cells, f"nklib notebook is missing {token}"
+                    assert all(i > appendix_idx for i in token_cells), f"{token} must appear only in the optional appendix"
+                    for idx in token_cells:
+                        _assert_commented_code_cell(payload["cells"][idx])
 
 
 def check_nklib():

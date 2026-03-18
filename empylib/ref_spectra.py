@@ -12,7 +12,7 @@ Created on Fri Jan 21 16:05:48 2022
 
 import numpy as _np 
 import empylib as _em
-from .utils import _ndarray_check, _local_to_global_angles
+from .utils import _local_to_global_angles
 from pathlib import Path as _Path
 from typing import Optional as _Optional, Tuple as _Tuple, Sequence as _Sequence, List as _List, Dict as _Dict, Any as _Any, Union as _Union
 

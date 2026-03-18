@@ -18,7 +18,7 @@ from scipy.optimize import least_squares
 from typing import Callable # used to check callable variables
 from pathlib import Path
 # import refidx as ri
-from .utils import _ndarray_check, convert_units as _convert_units, _check_mie_inputs, _warn_extrapolation
+from .utils import convert_units as _convert_units, _check_mie_inputs, _warn_extrapolation, _as_1d_array
 from typing import List as _List, Union as _Union
 import yaml
 import requests
@@ -217,7 +217,7 @@ def _process_nk_data(wavelength, nk_df, MaterialName, extrapolate):
     '''
     
     # check if wavelength is not ndarray
-    wavelength, wavelength_isfloat = _ndarray_check(wavelength) 
+    wavelength = _as_1d_array(wavelength, name = "wavelength") 
 
     # create complex refractive index using interpolation form nkfile
     nk_df_complex = nk_df['n'] + 1j*nk_df['k']
@@ -242,7 +242,7 @@ def _process_nk_data(wavelength, nk_df, MaterialName, extrapolate):
     _warn_extrapolation(wavelength, lo, hi, label=MaterialName, quantity="refractive index")
     
     # if wavelength was float (orginaly), convert N to a complex value
-    return complex(N[0]) if wavelength_isfloat else N, nk_df
+    return complex(N[0]) if len(N) == 1 else N, nk_df
 
 '''
     --------------------------------------------------------------------
@@ -758,15 +758,15 @@ def emt_brugg(fv_1,nk_1,nk_2):
     eps_1, eps_2 = nk_1**2, nk_2**2 # convert refractive index to dielectric constants
     
     # check if eps_1 or eps_2 are scalar and convert both to 1D ndarray
-    eps_1, eps_1_isscalar = _ndarray_check(eps_1)
-    eps_2, eps_2_isscalar = _ndarray_check(eps_2)
+    eps_1 = _as_1d_array(eps_1, name = "eps_1")
+    eps_2 = _as_1d_array(eps_2, name = "eps_2")
 
     # eps_1 is scalar, create a constant array of len(eps_2)
-    if   eps_1_isscalar and not eps_2_isscalar:
+    if len(eps_1) == 1 and len(eps_2) > 1:
         eps_1 = eps_1*_np.ones_like(eps_2)
         
     # eps_2 is scalar, create a constant array of len(eps_1)
-    elif not eps_1_isscalar and eps_2_isscalar:
+    elif len(eps_2) == 1 and len(eps_1) > 1:
         eps_2 = eps_2*_np.ones_like(eps_1)
     
     # both are ndarrays, assert they have same length
@@ -814,7 +814,7 @@ def eps_real_kkr(wavelength, eps_imag, eps_inf = 0, int_range = (0, _np.inf), cs
     eps_real: ndarray or float
               real part of dielectric constant
     '''
-    wavelength, wavelength_isfloat = _ndarray_check(wavelength)
+    wavelength = _as_1d_array(wavelength, name="wavelength")
     cshift = complex(0, cshift)
     w_i = _convert_units(wavelength, 'um', 'eV')
 
@@ -828,7 +828,7 @@ def eps_real_kkr(wavelength, eps_imag, eps_inf = 0, int_range = (0, _np.inf), cs
             return eps_inf + (2/_np.pi)*total
         
     elif isinstance(eps_imag, _np.ndarray) or isinstance(eps_imag,float):
-        eps_imag = _ndarray_check(eps_imag)[0]
+        eps_imag = _as_1d_array(eps_imag, name="eps_imag")
         assert wavelength.shape == eps_imag.shape, 'input arrays must be same length'
     
         def integration_element(w_r):
@@ -840,9 +840,7 @@ def eps_real_kkr(wavelength, eps_imag, eps_inf = 0, int_range = (0, _np.inf), cs
     
     eps_real = _np.real([integration_element(w_r) for w_r in w_i]).reshape(-1)
     
-    if wavelength.shape == (1,):
-        return float(eps_real[0])
-    return float(eps_real[0]) if wavelength_isfloat else eps_real 
+    return float(eps_real[0]) if len(wavelength) == 1 else eps_real 
 '''
     --------------------------------------------------------------------
                             Target functions

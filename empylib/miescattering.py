@@ -8,7 +8,7 @@ import numpy as _np
 from numpy import pi, exp, conj, imag, real, sqrt
 from scipy.special import jv, yv
 from .nklib import emt_brugg, emt_multilayer_sphere
-from .utils import _as_carray, _check_mie_inputs, _check_theta, _hide_signature
+from .utils import _as_1d_array, _check_mie_inputs, _check_theta, _hide_signature
 import pandas as _pd
 from typing import Union as _Union, Optional as _Optional, List as _List
 
@@ -335,7 +335,7 @@ def _normalize_single_particle_inputs(
     if wavelength.ndim != 1 or wavelength.size == 0:
         raise ValueError("wavelength must be a non-empty 1D array.")
 
-    Nh = _as_carray(Nh, "Nh", wavelength.size, val_type=complex)
+    Nh = _as_1d_array(Nh, "Nh", n_wavelengths=wavelength.size, dtype=complex)
     Np = _np.asarray(Np, dtype=complex)
     if Np.ndim == 1:
         Np = Np.reshape(1, -1)
@@ -790,8 +790,8 @@ def phase_scatt_HG(wavelength: _Union[float, _np.ndarray],
     if wavelength.ndim != 1 or wavelength.size == 0:
         raise ValueError("wavelength must be a non-empty 1D array.")
 
-    gcos = _as_carray(gcos, "gcos", wavelength.size, val_type=float)
-    qsca = _as_carray(qsca, "qsca", wavelength.size, val_type=float)
+    gcos = _as_1d_array(gcos, "gcos", n_wavelengths=wavelength.size, dtype=float)
+    qsca = _as_1d_array(qsca, "qsca", n_wavelengths=wavelength.size, dtype=float)
     theta = _check_theta(theta)
 
     gg, tt = _np.meshgrid(gcos, theta)

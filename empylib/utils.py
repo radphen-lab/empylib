@@ -11,47 +11,43 @@ hbar = 1.0545718E-34            # J*s (plank's constan)
 speed_of_light = 299792458      # m/s (speed of light)
 kBoltzmann = 1.38064852E-23     # J/K (Boltzman constant)
 
-def _as_carray(x, name, n_wavelengths, val_type = complex):
-        arr = _np.asarray(x)
-        if arr.ndim == 0:
-            return _np.full(n_wavelengths, val_type(arr), dtype=val_type)
-        if arr.shape != (n_wavelengths,):
-            raise ValueError(f"{name} must be scalar or have shape (len(wavelength),).")
-        return arr.astype(val_type)
+def _as_1d_array(x, name, n_wavelengths=None, dtype=None):
+    """Convert scalar/1D array-like input to a 1D ndarray.
 
-def _as_1d_array(x, name, dtype=None):
-    """Convert a scalar or 1D sequence to a 1D ndarray."""
-    arr = _np.asarray(x, dtype=dtype)
+    Accepts NumPy arrays, pandas Series, and array-like inputs exposing
+    ``to_numpy()``. If ``n_wavelengths`` is provided, scalar inputs are
+    broadcast and non-scalar inputs must match that length.
+    """
+    if hasattr(x, "to_numpy"):
+        arr = x.to_numpy()
+    else:
+        arr = _np.asarray(x)
+
     if arr.ndim == 0:
-        arr = arr.reshape(1)
+        if n_wavelengths is None:
+            arr = arr.reshape(1)
+        else:
+            n_wavelengths = int(n_wavelengths)
+            if n_wavelengths <= 0:
+                raise ValueError("n_wavelengths must be a positive integer.")
+            scalar = arr.item()
+            out_dtype = dtype if dtype is not None else arr.dtype
+            arr = _np.full(n_wavelengths, scalar, dtype=out_dtype)
     if arr.ndim != 1:
         raise ValueError(f"{name} must be a scalar or a 1D array.")
-    return arr
 
-def _as_real_array(x, name, *, positive=False, nonnegative=False):
-    """Validate a real scalar/1D sequence and return it as a 1D float array."""
-    raw = _np.asarray(x)
-    if raw.dtype == _np.bool_:
-        raise TypeError(f"{name} must contain real numeric values, not booleans.")
-    if _np.iscomplexobj(raw):
-        raise TypeError(f"{name} must contain real values.")
+    if n_wavelengths is not None and arr.shape != (int(n_wavelengths),):
+        raise ValueError(f"{name} must be scalar or have shape (len(wavelength),).")
 
-    arr = _as_1d_array(x, name, dtype=float)
-    if arr.size == 0:
-        raise ValueError(f"{name} must be non-empty.")
-    if not _np.all(_np.isfinite(arr)):
-        raise ValueError(f"{name} must contain only finite values.")
-    if positive and _np.any(arr <= 0):
-        raise ValueError(f"{name} must contain only positive values.")
-    if nonnegative and _np.any(arr < 0):
-        raise ValueError(f"{name} must contain only nonnegative values.")
+    if dtype is not None:
+        arr = arr.astype(dtype)
     return arr
 
 def _as_float_list(x, name, *, nonnegative=False):
     """Convert a scalar or 1D real array-like to a Python list of floats."""
     if x is None:
         return []
-    return [float(v) for v in _as_real_array(x, name, nonnegative=nonnegative)]
+    return [float(v) for v in _as_1d_array(x, name, dtype=float)]
 
 def _normalize_multilayer_inputs(wavelength, thickness, N_layers, *, N_above=1.0, N_below=1.0):
     """
@@ -71,7 +67,7 @@ def _normalize_multilayer_inputs(wavelength, thickness, N_layers, *, N_above=1.0
     N_below_arr : ndarray
         Lower semi-infinite medium refractive index with shape (len(wavelength),).
     """
-    wavelength_arr = _as_real_array(wavelength, "wavelength", positive=True)
+    wavelength_arr = _as_1d_array(wavelength, "wavelength", dtype=float)
     if thickness is None:
         dL = []
     else:
@@ -110,22 +106,13 @@ def _normalize_multilayer_inputs(wavelength, thickness, N_layers, *, N_above=1.0
         raise ValueError("len(N_layers) must be equal to len(thickness).")
 
     nL = [
-        _as_carray(layer_ni, f"N_layers[{i}]", n_wavelengths, val_type=complex)
+        _as_1d_array(layer_ni, f"N_layers[{i}]", n_wavelengths=n_wavelengths, dtype=complex)
         for i, layer_ni in enumerate(layer_inputs)
     ]
-    n0 = _as_carray(N_above, "N_above", n_wavelengths, val_type=complex)
-    nS = _as_carray(N_below, "N_below", n_wavelengths, val_type=complex)
+    n0 = _as_1d_array(N_above, "N_above", n_wavelengths=n_wavelengths, dtype=complex)
+    nS = _as_1d_array(N_below, "N_below", n_wavelengths=n_wavelengths, dtype=complex)
 
     return wavelength_arr, dL, nL, n0, nS
-
-def _ndarray_check(x):
-    '''
-    check if x is not ndarray. If so, convert x to a 1d ndarray
-    '''
-    
-    if not isinstance(x, _np.ndarray):
-        return _np.array([x]), True
-    return x, False
 
 # a function to convert units in electrodynamics
 def convert_units(x, x_in, to):
@@ -383,7 +370,7 @@ def _check_mie_inputs(wavelength=None, N_host=None, Np_shells=None, D=None, *, s
 
     if D is not None:
         def _as_1d_array_positive(x):
-            return _as_real_array(x, "D", positive=True)
+            return _as_1d_array(x, "D", dtype=float)
 
         def _validate_monodisperse_layers(d_layers):
             mono_vals = _np.array([a.item() for a in d_layers], dtype=float)
@@ -640,6 +627,11 @@ def _warn_extrapolation(lam_arr, lo, hi, label="", quantity=""):
                 f"Extrapolating {label} {quantity} above tabulated range "
                 f"(requested max {lam_max:.3f} µm; data ends {hi:.3f} µm)",
             )
+
+def _check_aoi(incidence_angle):
+    aoi_max = np.pi/2
+    if incidence_angle > aoi_max:
+        raise ValueError("aoi > pi/2")
 
 def rt_style_mapper(sample: _pd.DataFrame,
                 linestyles: _Dict = {"tot": "-", "spec": ":", "dif": "--"},

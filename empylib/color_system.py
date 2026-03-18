@@ -9,7 +9,9 @@ Created on Wed 17 Aug, 2022
 
 import numpy as np
 import colour as clr
-from typing import Tuple
+from typing import Any, Tuple
+
+from .utils import _as_1d_array
 
 # ---------------------------- helpers ---------------------------------
 
@@ -129,8 +131,8 @@ def _emitter_rgb_from_spd(
 # ----------------------------- API ------------------------------------
 
 def spectrum_to_hex(
-    wls_um: np.ndarray,
-    values: np.ndarray,
+    wls_um: Any,
+    values: Any,
     *,
     source: str = "material",                 # "material" (R/T/1-A) or "emitter"
     illuminant=None,                          # None | (ill_wls_um, ill_spd) | colour.SpectralDistribution
@@ -155,12 +157,14 @@ def spectrum_to_hex(
 
     Parameters
     ----------
-    wls_um : np.ndarray, shape (N,)
+    wls_um : np.ndarray | pandas.Series, shape (N,)
         Wavelength grid in micrometres (μm). Can be unsorted; it will be sorted ascending.
-        Must be finite numeric values.
+        Must be scalar/1D numeric data coercible to float. If a pandas Series is passed,
+        its index is ignored.
 
-    values : np.ndarray, shape (N,)
+    values : np.ndarray | pandas.Series, shape (N,)
         Spectrum sampled at `wls_um`.
+        If a pandas Series is passed, its index is ignored and only the values are used.
         - If `source="material"`: dimensionless factors in [0,1]. Values outside are clipped.
         - If `source="emitter"`: spectral power density (relative scale OK). Units are given by
           `emitter_units`.
@@ -216,10 +220,8 @@ def spectrum_to_hex(
         - `wls_um.size != values.size`
         - `emitter_units` or `illuminant_units` not in {"per_um","per_nm"}
         - `source` not in {"material","emitter"}
+        - `wls_um` or `values` is not scalar/1D, or cannot be coerced to float
         - (From helpers) no spectral overlap between sample/illuminant/CMFs.
-
-    TypeError
-        - `wls_um` or `values` is not a NumPy array.
 
     Notes
     -----
@@ -266,8 +268,10 @@ def spectrum_to_hex(
     """
     if interval_nm <= 0:
         raise ValueError("interval_nm must be > 0.")
-    if not isinstance(wls_um, np.ndarray) or not isinstance(values, np.ndarray):
-        raise TypeError("wls_um and values must be numpy arrays.")
+
+    wls_um = _as_1d_array(wls_um, "wls_um", dtype=float)
+    values = _as_1d_array(values, "values", dtype=float)
+
     if wls_um.size != values.size:
         raise ValueError("wls_um and values must have the same length.")
 
