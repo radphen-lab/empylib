@@ -35,8 +35,8 @@ def local_material_demo():
 def oscillator_demo():
     lam = np.linspace(0.45, 1.80, 220)
     oscillator_dict = {
-        "lorentz": {"epsinf": 1.0, "wp": 7.5, "wn": 3.0, "gamma": 0.25},
-        "gaussian": {"A": 1.1, "Br": 0.30, "E0": 2.0},
+        "lorentz_1": {"type": "lorentz", "epsinf": 1.0, "wp": 7.5, "wn": 3.0, "gamma": 0.25},
+        "gaussian_1": {"type": "gaussian", "A": 1.1, "Br": 0.30, "E0": 2.0},
     }
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", IntegrationWarning)
@@ -58,15 +58,14 @@ def fit_demo():
     lam = np.linspace(0.45, 1.80, 120)
     target = nk.multi_oscillator(
         lam,
-        {"lorentz": {"epsinf": 1.0, "wp": 7.0, "wn": 2.8, "gamma": 0.22}},
+        {"lorentz_1": {"type": "lorentz", "epsinf": 1.0, "wp": 7.0, "wn": 2.8, "gamma": 0.22}},
     )
     initial_guess = {
-        "lorentz": {"epsinf": 1.2, "wp": 6.5, "wn": 2.7, "gamma": 0.30},
+        "lorentz_1": {"type": "lorentz", "epsinf": 1.2, "wp": 6.5, "wn": 2.7, "gamma": 0.30},
     }
     fitted_oscillator, result = nk.fit_to_oscillator(
         lam,
-        target.real,
-        target.imag,
+        [target.real, target.imag],
         initial_guess,
     )
 

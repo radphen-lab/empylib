@@ -6,10 +6,6 @@ Created on Sun Nov  7 17:25:53 2021
 
 @author: PanxoPanza
 """
-import os
-import platform
-from pyexpat import model
-from matplotlib.pylab import gamma
 import numpy as _np 
 import pandas as _pd
 from scipy import interpolate
@@ -56,7 +52,7 @@ def blend_model(wavelength, nk_df, nk_model, blend_low=None, blend_high=None):
 
     # blend lower end data to smooth transition
     if blend_low > 0:
-        # Blend in [wl_min, wl_min+blend_window] and [wl_max-blend_window, wl_max]
+        # Blend in [wl_min, wl_min+blend_window]
         bw = float(blend_low)
 
         # lower edge
@@ -65,7 +61,7 @@ def blend_model(wavelength, nk_df, nk_model, blend_low=None, blend_high=None):
             t = (wavelength[low] - lam_min) / bw  # 0..1
             # smoothstep
             s = t*t*(3 - 2*t)
-            nk_itp = nk_interp[low] 
+            nk_itp = nk_interp[low]
             nk_out[low] = (1 - s)*nk_model[low] + s*nk_itp
 
     # blend higher end data to smooth transition
@@ -489,28 +485,74 @@ def drude(wavelength, epsinf,wp,gamma):
     
     return _np.sqrt(epsinf - wp**2/(w**2 + 1j*gamma*w))
 
+def _normalize_fixed_params(fixed_params):
+    '''Normalize fixed_params to standard dict format.'''
+    if fixed_params is None:
+        # No fixed parameters requested.
+        return {}
+
+    if isinstance(fixed_params, dict):
+        # Normalize each model entry to a set for fast membership checks.
+        return {
+            model: set(params) if isinstance(params, (list, tuple, set)) else {params}
+            for model, params in fixed_params.items()
+        }
+
+    if isinstance(fixed_params, (list, tuple)):
+        # Convert list of (model, param) pairs into dict-of-sets format.
+        result = {}
+        for item in fixed_params:
+            if not isinstance(item, (tuple, list)) or len(item) != 2:
+                raise ValueError(
+                    f"Invalid fixed_params format: {item}. "
+                    "Expected (model_name, param_name) tuples."
+                )
+            model, param = item
+            if model not in result:
+                result[model] = set()
+            result[model].add(param)
+        return result
+
+    raise TypeError("fixed_params must be dict, list of tuples, or None")
+
+
+def _merge_bounds_with_defaults(model_name, user_bounds, default_bounds):
+    '''Merge user-provided bounds with default bounds for one model.'''
+    merged = default_bounds.copy()
+
+    if user_bounds is not None:
+        for param_name, bound in user_bounds.items():
+            if param_name not in merged:
+                raise ValueError(
+                    f"Model '{model_name}': parameter '{param_name}' "
+                    "is not recognized for this model type"
+                )
+            merged[param_name] = bound
+
+    return merged
+
+
 def multi_oscillator(wavelength, oscilator_dict):
     '''
-    Computes refractive index using a combination of oscillator models
-    
+    Computes refractive index using a combination of oscillator models.
+
     Parameters
     ----------
-    wavelength  : ndarray or float
-        Wavelength range (um)
-
-    oscilator_dict   : dict
-        Dictionary containing model parameters. Sorted as:
-            {'lorentz': {'epsinf': value, 'wp': value, 'wn': value, 'gamma': value},
-            'drude'  : {'epsinf': value, 'wp': value, 'gamma': value},
-            'tauc-lorentz': {'A': value, 'C': value, 'E0': value, 'Eg': value},
-            'gaussian': {'A': value, 'Br': value, 'E0': value} }
+    wavelength : ndarray or float
+        Wavelength range (um).
+    oscilator_dict : dict
+        Dictionary with named models containing a required 'type' key.
+        Example:
+        {
+            'model1': {'type': 'drude', 'epsinf': 1.5, 'wp': 10.0, 'gamma': 0.1},
+            'model2': {'type': 'lorentz', 'epsinf': 2.0, 'wp': 8.0, 'wn': 5.0, 'gamma': 0.05}
+        }
 
     Returns
     -------
-    eps : ndarray (complex)
-        Complex dielectric constant
+    ndarray (complex)
+        Complex refractive index.
     '''
-    # create a dictionary with models and function names
     base_models = {
         'tauc-lorentz': tauc_lorentz,
         'gaussian': gaussian,
@@ -518,68 +560,134 @@ def multi_oscillator(wavelength, oscilator_dict):
         'drude': drude
     }
 
-    eps = complex(0,0)
-    for name, params in oscilator_dict.items():
+    # Accumulate complex dielectric contributions from each named model.
+    eps = complex(0, 0)
+    for model_name, model_dict in oscilator_dict.items():
+        if 'type' not in model_dict:
+            raise ValueError(
+                f"Model '{model_name}' is missing required 'type' key. "
+                "Each model must define one of: drude, lorentz, tauc-lorentz, gaussian."
+            )
 
-        name = name.lower()
-        if name not in base_models:
-            print(f"Model '{name}' is not recognized. Skipping this model.")
-            continue
+        model_type = model_dict['type'].lower()
+        if model_type not in base_models:
+            raise ValueError(
+                f"Model '{model_name}': type '{model_type}' is not recognized. "
+                f"Valid types are: {list(base_models.keys())}"
+            )
 
-        # Inspect model's signature to check required parameters
-        sig = _inspect.signature(base_models[name])
+        params = {k: v for k, v in model_dict.items() if k != 'type'}
+        sig = _inspect.signature(base_models[model_type])
         required_params = list(sig.parameters.keys())[1:]
 
-        # Throw error if any required parameter is missing
         if set(params.keys()) != set(required_params):
-            raise ValueError(f"{name} model requires parameters: {required_params}")
-        
-        eps += base_models[name](wavelength, **params)**2
-    
+            raise ValueError(
+                f"Model '{model_name}' (type: {model_type}) requires parameters: "
+                f"{required_params}, but got: {list(params.keys())}"
+            )
+
+        eps += base_models[model_type](wavelength, **params) ** 2
+
+    # Return refractive index from total dielectric response.
     return _np.sqrt(eps)
 
-def fit_to_oscillator(x, n_data, k_data, oscillator_dict, bounds=None, weights=None, x_units = 'um'):
-    """
-    Fit an oscillator parameters to tabulated refractive index data
-    parameters:
-    -----------
+
+def fit_to_oscillator(x, y_data,
+                      oscillator_dict,
+                      y_eval=None,
+                      bounds=None,
+                      weights=None,
+                      fixed_params=None,
+                      x_units='um'):
+    '''
+    Fit oscillator parameters to measured data.
+
+    Parameters
+    ----------
     x : array_like
         Independent variable array (e.g., wavelength in microns).
-    n_data : array_like
-        Real part of complex refractive index data to fit.
-    k_data : array_like
-        Imaginary part of complex refractive index data to fit.
+    y_data : list or tuple
+        Measured target data.
+        - If y_eval is None: y_data must be [n_data, k_data].
+        - If y_eval is provided: y_data must match y_eval length,
+          e.g. [R_measured, T_measured].
     oscillator_dict : dict
-        Dictionary containing oscillator model initial parameters. See `multi_oscillator` for format.
+        Dictionary with named models containing 'type' key and parameters.
+        Format:
+        {'model1': {'type': 'drude', 'epsinf': 1.5, 'wp': 10.0, 'gamma': 0.1}, ...}
+    y_eval : list or tuple of callables, optional
+        Custom evaluator functions. Each function must have signature
+        f(lam, nk) and return one modeled target array.
+        Example: y_eval = [fun_R, fun_T].
+        If None, legacy fitting to [n_data, k_data] is used.
     bounds : dict, optional
-        Bounds for oscillator parameters as (lower_bounds, upper_bounds).
+        Partial bounds for specific parameters. Missing bounds use defaults.
+        Format: {'model1': {'epsinf': (0, 2)}, 'model2': {'wp': (5, 20)}}
     weights : array_like or scalar, optional
-        Weights for fitting residuals. Can be a single scalar or a tuple of two arrays
-        for real and imaginary parts.
+        Residual weights.
+        - None: uniform weights.
+        - scalar: same weight for all residuals.
+        - Legacy mode (y_eval is None): tuple/list of 2 entries for n and k.
+        - Custom mode: tuple/list with one entry per target in y_data.
+          Each entry can be scalar or array matching target length.
+    fixed_params : dict, list, or None, optional
+        Parameters to keep fixed (not optimized).
+        Supported formats:
+        {'model1': ['gamma', 'wp']} or [('model1', 'gamma'), ('model2', 'wp')]
     x_units : str, optional
-        Units of the input x array. If None, assumes x is in microns.
-    returns:
-    --------
-    DrudeParams
-        Fitted Drude parameters as a named tuple (eps_inf, omega_p, gamma).
-    res : OptimizeResult
-        The optimization result returned by scipy.optimize.least_squares.
-    """
-    # convert x units to microns
+        Units of x (default: 'um').
+
+    Returns
+    -------
+    dict
+        Oscillator dictionary with fitted and fixed parameters.
+    OptimizeResult
+        Output from scipy.optimize.least_squares.
+    '''
+    def _to_1d_real(arr, name):
+        # Coerce targets/model outputs to 1D real vectors used by least_squares.
+        arr = _np.asarray(arr)
+        arr = _np.real_if_close(arr, tol=1000)
+        if _np.iscomplexobj(arr):
+            raise ValueError(f"{name} must be real-valued")
+        return _np.asarray(arr, float).reshape(-1)
+
     lam = _convert_units(x, x_units, to='um')
     lam = _np.asarray(lam, float)
-        
-    # Create a single array with real and imaginary parts
-    y = _np.concatenate([_np.asarray(n_data, float), 
-                        _np.asarray(k_data, float)])
-    
-    # Declare dictionary with standard bounds for each model
-    bound_dict = {'drude':        {'epsinf': (0, 10), 'wp': (1E-2, 100), 'gamma': (1E-4, 10)},
-                  'lorentz':      {'epsinf': (0, 10), 'wp': (1E-2, 100), 'wn': (1E-2, 10), 'gamma': (1E-4, 10)},
-                  'tauc-lorentz': {'A': (0, 10), 'C': (0, 10), 'E0': (0, 10), 'Eg': (0, 10)},
-                  'gaussian':     {'A': (0, 10), 'Br': (0, 10), 'E0': (0, 10)}}
-    
-    # create a dictionary with models and function names
+
+    legacy_mode = y_eval is None
+
+    if legacy_mode:
+        # Legacy API path: y_data is interpreted as [n_data, k_data].
+        if not isinstance(y_data, (list, tuple)) or len(y_data) != 2:
+            raise ValueError("When y_eval is None, y_data must be [n_data, k_data]")
+        n_data = _to_1d_real(y_data[0], 'n_data')
+        k_data = _to_1d_real(y_data[1], 'k_data')
+        y_data_blocks = [n_data, k_data]
+        y_eval_list = None
+    else:
+        # Custom API path: y_eval provides one forward model per target block.
+        if not isinstance(y_eval, (list, tuple)):
+            raise TypeError("y_eval must be a list or tuple of callables")
+        if not all(callable(fn) for fn in y_eval):
+            raise TypeError("All entries in y_eval must be callable")
+        if not isinstance(y_data, (list, tuple)):
+            raise TypeError("y_data must be a list or tuple when y_eval is provided")
+        if len(y_data) != len(y_eval):
+            raise ValueError("y_data and y_eval must have the same length")
+        y_data_blocks = [_to_1d_real(arr, f'y_data[{i}]') for i, arr in enumerate(y_data)]
+        y_eval_list = list(y_eval)
+
+    target_sizes = [len(arr) for arr in y_data_blocks]
+    y = _np.concatenate(y_data_blocks)
+
+    default_bounds = {
+        'drude': {'epsinf': (0, 10), 'wp': (1E-2, 100), 'gamma': (1E-4, 10)},
+        'lorentz': {'epsinf': (0, 10), 'wp': (1E-2, 100), 'wn': (1E-2, 10), 'gamma': (1E-4, 10)},
+        'tauc-lorentz': {'A': (0, 10), 'C': (0, 10), 'E0': (0, 10), 'Eg': (0, 10)},
+        'gaussian': {'A': (0, 10), 'Br': (0, 10), 'E0': (0, 10)}
+    }
+
     base_models = {
         'tauc-lorentz': tauc_lorentz,
         'gaussian': gaussian,
@@ -587,81 +695,161 @@ def fit_to_oscillator(x, n_data, k_data, oscillator_dict, bounds=None, weights=N
         'drude': drude
     }
 
-    if bounds is None:
-        bounds = bound_dict
-    elif not isinstance(bounds, dict):
-        raise TypeError("Bounds must be provided as a dictionary.")
+    if bounds is not None and not isinstance(bounds, dict):
+        raise TypeError("bounds must be a dictionary or None")
 
-    # check that oscilator_dict has all required parameters and prepare initial values
+    fixed_params_dict = _normalize_fixed_params(fixed_params)
+
     p0 = []
-    lb , ub = [], []
-    for name, params in oscillator_dict.items():
+    lb = []
+    ub = []
+    fitted_param_index = {}
 
-        name = name.lower()
-        if name not in base_models:
-            raise ValueError(f"Model '{name}' is not recognized.")
+    for model_name, model_dict in oscillator_dict.items():
+        if 'type' not in model_dict:
+            raise ValueError(
+                f"Model '{model_name}' is missing required 'type' key. "
+                "Each model must define one of: drude, lorentz, tauc-lorentz, gaussian."
+            )
 
-        if name not in bounds:
-            raise ValueError(f"Bounds for model '{name}' are not recognized.")
+        model_type = model_dict['type'].lower()
+        if model_type not in base_models:
+            raise ValueError(
+                f"Model '{model_name}': type '{model_type}' is not recognized. "
+                f"Valid types are: {list(base_models.keys())}"
+            )
 
-        # Inspect model's signature to check required parameters
-        sig = _inspect.signature(base_models[name])
+        sig = _inspect.signature(base_models[model_type])
         required_params = list(sig.parameters.keys())[1:]
+        model_params = {k: v for k, v in model_dict.items() if k != 'type'}
 
-        # Throw error if any required parameter is missing
-        if set(params.keys()) != set(required_params):
-            raise ValueError(f"{name} model requires parameters: {required_params}")
-   
-        model_bounds = bounds[name]
+        missing_params = set(required_params) - set(model_params.keys())
+        if missing_params:
+            raise ValueError(
+                f"Model '{model_name}' (type: {model_type}) is missing parameters: {missing_params}"
+            )
+
+        user_bounds_for_model = bounds.get(model_name) if bounds else None
+        model_bounds = _merge_bounds_with_defaults(
+            model_name,
+            user_bounds_for_model,
+            default_bounds[model_type]
+        )
+
+        model_fixed = fixed_params_dict.get(model_name, set())
         for param_name in required_params:
-            p0.append(params[param_name])          # append initial values
-            lb.append(model_bounds[param_name][0]) # append lower bounds
-            ub.append(model_bounds[param_name][1]) # append upper bounds
+            if param_name in model_fixed:
+                # Keep fixed parameters at their input values.
+                continue
+
+            # Register only free parameters in optimizer vectors.
+            fitted_param_index[(model_name, param_name)] = len(p0)
+            p0.append(float(model_params[param_name]))
+            lb.append(float(model_bounds[param_name][0]))
+            ub.append(float(model_bounds[param_name][1]))
 
     p0 = _np.asarray(p0, float)
-    p_bounds = (_np.asarray(lb), _np.asarray(ub))
+    p_bounds = (_np.asarray(lb, float), _np.asarray(ub, float))
+
+    def _build_weight_block(weight_item, target_len, idx):
+        # Expand scalar weights or validate per-point weight arrays.
+        if _np.isscalar(weight_item):
+            return _np.ones(target_len, dtype=float) * float(weight_item)
+        w_block = _np.asarray(weight_item, float).reshape(-1)
+        if len(w_block) != target_len:
+            raise ValueError(
+                f"weights[{idx}] has length {len(w_block)} but target length is {target_len}"
+            )
+        return w_block
 
     if weights is None:
-        w = _np.ones_like(y)
+        w = _np.ones_like(y, dtype=float)
+    elif _np.isscalar(weights):
+        w = _np.ones_like(y, dtype=float) * float(weights)
+    elif isinstance(weights, _np.ndarray):
+        w = _np.asarray(weights, float).reshape(-1)
+        if len(w) != len(y):
+            raise ValueError(f"weights length ({len(w)}) must match residual length ({len(y)})")
+    elif isinstance(weights, (list, tuple)):
+        if legacy_mode and len(weights) == 2:
+            w = _np.concatenate([
+                _build_weight_block(weights[0], target_sizes[0], 0),
+                _build_weight_block(weights[1], target_sizes[1], 1)
+            ])
+        else:
+            if len(weights) != len(target_sizes):
+                raise ValueError(
+                    "weights must have one entry per target block in y_data "
+                    f"(expected {len(target_sizes)}, got {len(weights)})"
+                )
+            w = _np.concatenate([
+                _build_weight_block(weights[i], target_sizes[i], i)
+                for i in range(len(target_sizes))
+            ])
     else:
-        # weights can be (w_eps1, w_eps2) arrays, scalars, or a single scalar
-        if _np.isscalar(weights): # if weight is a single number
-            w = _np.ones_like(y) * float(weights)
+        raise TypeError("weights must be None, scalar, ndarray, or list/tuple")
 
-        elif isinstance(weights, tuple) and len(weights) == 2: # if weight is a tuple with two scalar
-            w1, w2 = weights
-            w = _np.concatenate([_np.ones_like(n_data) * float(w1), 
-                                _np.ones_like(k_data) * float(w2)])
-        else:                                                  # if weight is a tuple with two arrays
-            w1, w2 = weights
-            w = _np.concatenate([_np.asarray(w1, float), _np.asarray(w2, float)])
-
-    # ancillary function to construct oscillator dictionary from parameter array
     def construct_oscillator_dict(p):
-        oscillator_iter = {}
-        for name in oscillator_dict.keys():
-            name = name.lower()
-            sig = _inspect.signature(base_models[name])
-            required_params = list(sig.parameters.keys())[1:]
-            n_params = len(required_params)
-            param_values = p[:n_params]
-            p = p[n_params:]  # update p to remove used parameters
-            oscillator_iter[name] = dict(zip(required_params, param_values))
-        return oscillator_iter
+        # Rebuild a full oscillator_dict from current optimization vector p.
+        out = {}
+        for model_name, model_dict in oscillator_dict.items():
+            out[model_name] = {'type': model_dict['type']}
+            model_type = model_dict['type'].lower()
+            required_params = list(_inspect.signature(base_models[model_type]).parameters.keys())[1:]
+            for param_name in required_params:
+                key = (model_name, param_name)
+                if key in fitted_param_index:
+                    out[model_name][param_name] = float(p[fitted_param_index[key]])
+                else:
+                    out[model_name][param_name] = float(model_dict[param_name])
+        return out
 
     def resid(p):
-        # construct dictionary with current parameters
-        oscillator_iter = construct_oscillator_dict(p)
+        # Compute nk from current parameters before mapping to measured targets.
+        osc = construct_oscillator_dict(p)
+        nk = multi_oscillator(lam, osc)
 
-        # compute refractive index with current parameters
-        n_complex = multi_oscillator(lam, oscillator_iter)
-        r = _np.concatenate([n_complex.real - n_data, 
-                            n_complex.imag - k_data])
+        if legacy_mode:
+            # Compare fitted nk directly against n/k measured blocks.
+            model_blocks = [
+                _to_1d_real(nk.real, 'model_n'),
+                _to_1d_real(nk.imag, 'model_k')
+            ]
+        else:
+            # Apply custom forward functions (e.g., R/T) to nk.
+            model_blocks = []
+            for i, fn in enumerate(y_eval_list):
+                try:
+                    model_i = fn(lam, nk)
+                except Exception as exc:
+                    raise RuntimeError(f"y_eval[{i}] failed: {exc}") from exc
+                model_blocks.append(_to_1d_real(model_i, f'model_output[{i}]'))
+
+        for i, (model_i, data_i) in enumerate(zip(model_blocks, y_data_blocks)):
+            if len(model_i) != len(data_i):
+                raise ValueError(
+                    f"Target length mismatch at index {i}: "
+                    f"model has {len(model_i)} points, data has {len(data_i)} points"
+                )
+
+        r = _np.concatenate([
+            model_i - data_i for model_i, data_i in zip(model_blocks, y_data_blocks)
+        ])
+        # Weighted residual vector consumed by least_squares.
         return r * w
 
-    res = least_squares(resid, p0, bounds=p_bounds, method="trf")
-    oscillator_iter = construct_oscillator_dict(res.x)
-    return oscillator_iter, res
+    if p0.size == 0:
+        # Shortcut when every parameter is fixed.
+        class _EmptyResult:
+            pass
+        res = _EmptyResult()
+        res.x = _np.array([], dtype=float)
+        res.success = True
+        res.cost = 0.5 * _np.sum(resid(_np.array([], dtype=float)) ** 2)
+    else:
+        res = least_squares(resid, p0, bounds=p_bounds, method='trf')
+
+    return construct_oscillator_dict(res.x), res
 
 def emt_multilayer_sphere(D: _List[float],
                           Np: _List[_Union[float, _np.ndarray]],
