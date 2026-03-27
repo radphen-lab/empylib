@@ -430,8 +430,7 @@ NOTEBOOK_SPECS["nklib_test.ipynb"] = {
                 warnings.simplefilter("ignore", IntegrationWarning)
                 fitted_oscillator, result = nk.fit_to_oscillator(
                     lam_fit,
-                    target_nk.real,   # n data
-                    target_nk.imag,   # k data
+                    [target_nk.real, target_nk.imag],  # [n_data, k_data]
                     initial_guess,    # initial parameter dictionary
                     x_units="um",     # wavelength unit used by lam_fit
                 )

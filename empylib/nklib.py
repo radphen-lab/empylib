@@ -8,17 +8,16 @@ Created on Sun Nov  7 17:25:53 2021
 """
 import numpy as _np 
 import pandas as _pd
-from scipy import interpolate
-from scipy.integrate import quad
-from scipy.optimize import least_squares
-from typing import Callable # used to check callable variables
-from pathlib import Path
+from scipy.integrate import quad as _quad
+from scipy.optimize import least_squares as _least_squares
+from typing import Callable as _Callable # used to check callable variables
+from pathlib import Path as _Path
 # import refidx as ri
 from .utils import convert_units as _convert_units, _check_mie_inputs, _warn_extrapolation, _as_1d_array
 from typing import List as _List, Union as _Union
-import yaml
-import requests
-from io import StringIO
+import yaml as _yaml
+import requests as _requests
+from io import StringIO as _StringIO
 import inspect as _inspect
 
 __all__ = ('get_nkfile', 'get_ri_info', 
@@ -31,6 +30,26 @@ __all__ = ('get_nkfile', 'get_ri_info',
             'HDPE', 'PDMS', 'PMMA', 'PVDF', 'H2O')
 
 def blend_model(wavelength, nk_df, nk_model, blend_low=None, blend_high=None):
+    '''
+    Blend tabulated nk data with a model outside the data range to smooth transition.
+    Parameters
+    ----------
+    wavelength : ndarray
+        Wavelengths to interpolate (um).
+    nk_df : DataFrame
+        Tabulated nk data.
+    nk_model : ndarray
+        Model values outside the data range.
+    blend_low : float, optional
+        Lower blending window (um).
+    blend_high : float, optional
+        Upper blending window (um).
+        
+    Returns
+    -------
+    nk_out : ndarray
+        Blended complex refractive index
+    '''
 
     # get inside index based on zero values of nk_interp
     lam_min, lam_max = float(nk_df.index[0]), float(nk_df.index[-1])
@@ -39,7 +58,7 @@ def blend_model(wavelength, nk_df, nk_model, blend_low=None, blend_high=None):
     # interpolate nk data
     nk_interp = _np.interp(wavelength, nk_df.index, nk_df['n'] + 1j*nk_df['k'])
     nk_out = _np.empty_like(nk_interp, dtype=complex)
-    nk_out[~inside] = nk_model[~inside]     # outside data range: model
+    nk_out[~inside] = nk_model[~inside]   # outside data range: model
     nk_out[inside] = nk_interp[inside]    # inside data range: interpolated data
     
     if blend_low is None:
@@ -106,10 +125,10 @@ def get_nkfile(wavelength, MaterialName=None, get_from_local_path = False, lam_u
     # retrieve local path
     if get_from_local_path:
         # if function is called locally
-        caller_directory = Path(__file__).parent / 'nk_files'
+        caller_directory = _Path(__file__).parent / 'nk_files'
     else :
         # if function is called from working directory (where the function is called)
-        caller_directory = Path.cwd()
+        caller_directory = _Path.cwd()
     
     # Construct the full path of the file
     filename = MaterialName + '.nk'
@@ -143,17 +162,17 @@ def ri_info_data(shelf,book,page):
     url = url_root  + shelf + '/'  + book  + '/nk/' + page + '.yml'
 
     # Download YAML content
-    response = requests.get(url)
+    response = _requests.get(url)
     response.raise_for_status()
 
     # Parse YAML content
-    yaml_data = yaml.safe_load(response.text)
+    yaml_data = _yaml.safe_load(response.text)
 
     # Extract tabulated data block
     nk_text = yaml_data['DATA'][0]['data']
 
     # Read into DataFrame using regex-based separator
-    nk_df = _pd.read_csv(StringIO(nk_text), sep=r'\s+', names=['wavelength', 'n', 'k'])
+    nk_df = _pd.read_csv(_StringIO(nk_text), sep=r'\s+', names=['wavelength', 'n', 'k'])
     nk_df.index = nk_df['wavelength']           # set wavelength as index
     nk_df = nk_df.drop(columns=['wavelength'])  # remove 'wavelength' column
 
@@ -360,19 +379,37 @@ def gaussian(wavelength, A,Br,E0):
     eps : ndarray (complex)
         Complex dielectric constant
     '''
-    #  Gauss model as function of E (in eV)
-    f = 0.5/_np.sqrt(_np.log(2)) # scaling constant
-    eps_G = lambda E: A*_np.exp(-(f*(E - E0)/Br)**2) \
-                    - A*_np.exp(-(f*(E + E0)/Br)**2)
+    # Gauss model as function of E (in eV)
+    f = 0.5 / _np.sqrt(_np.log(2))
+    E = _as_1d_array(_convert_units(wavelength, 'um', 'eV'), name='energy')
 
-    # get real and imaginary part of dielectric constant
-    E = _convert_units(wavelength,'um','eV')                        # wavelength range in eV
-    a, b = max(E0 - 5*Br,0), E0 + 5*Br                             # integration range
-    eps_re = eps_real_kkr(wavelength, eps_G, int_range=(a, b), cshift=1e-4) # get real part from KK
-    eps_im = eps_G(E)                                              # imaginary component
+    def _eps_g(Ev):
+        return A * _np.exp(-(f * (Ev - E0) / Br)**2) - A * _np.exp(-(f * (Ev + E0) / Br)**2)
 
-    eps = eps_re + 1j*eps_im
-    return _np.sqrt(eps)
+    eps_im = _eps_g(E)
+
+    # Vectorized principal-value KK integral on an energy grid.
+    e_lo = max(float(_np.min(E)) * 0.2, 1e-6)
+    e_hi = max(float(_np.max(E)) * 5.0, E0 + 12.0 * Br)
+    n_grid = max(4000, 8 * E.size)
+    xi = _np.linspace(e_lo, e_hi, n_grid)
+    eps2_xi = _eps_g(xi)
+
+    denom = xi[:, None]**2 - E[None, :]**2
+
+    dxi = xi[1] - xi[0]
+    pv_mask = _np.abs(xi[:, None] - E[None, :]) <= 2.0 * dxi
+    safe = ~pv_mask
+
+    num = xi[:, None] * eps2_xi[:, None]
+    integrand = _np.zeros_like(denom, dtype=float)
+    _np.divide(num, denom, out=integrand, where=safe)
+
+    eps_re = (2.0 / _np.pi) * _np.trapz(integrand, x=xi, axis=0)
+
+    eps = eps_re + 1j * eps_im
+    n_complex = _np.sqrt(eps)
+    return n_complex[0] if n_complex.size == 1 else n_complex
 
 def tauc_lorentz(wavelength, A,C,E0,Eg):
     '''
@@ -402,32 +439,62 @@ def tauc_lorentz(wavelength, A,C,E0,Eg):
         Complex dielectric constant
     '''
     
-    #  Tauc-Lorentz model as function of E (in eV)
-    eps_TL = lambda E: 1/E*A*E0*C*(E - Eg)**2/ \
-                 ((E**2 - E0**2)**2 + C**2*E**2)*(E > Eg)
-    
-    # get real and imaginary part of dielectric constant
-    E = _convert_units(wavelength,'um','eV')                         # wavelength range in eV
-    a, b = Eg-20*C, Eg + 20*C                                            # set integration range
-    eps_re = eps_real_kkr(wavelength, eps_TL, int_range=(a, b), cshift=1e-3) # get real part from KK
-    eps_im = eps_TL(E)                                              # imaginary component
-    
-    #------------------------------------------------------------------------------
-    # # Alternative form (didn't work)
-    #------------------------------------------------------------------------------
-    # source: Luis V. Rodríguez-de Marcos and Juan I. Larruquert, 
-    #           "Analytic optical-constant model derived from Tauc-Lorentz and Urbach tail," 
-    #           Opt. Express 24, 28561-28572 (2016)
-    # a = 0.09
-    # b = E + 1j*a
-    # d = _np.sqrt(E0**2 - (C/2)**2) - 1j*C/2
-    # F = lambda x,y,z: ((Eg + x)**2*_np.log(Eg + x) - (Eg - x)**2*_np.log(Eg - x))/ \
-    #                     x*(x**2 - y**2)*(x**2 - z**2)
+    # Tauc-Lorentz imaginary component as function of photon energy E (eV)
+    E = _as_1d_array(_convert_units(wavelength, 'um', 'eV'), name='energy')
+    eps_im = A * E0 * C * (E - Eg)**2
+    eps_im /= E * ((E**2 - E0**2)**2 + C**2 * E**2)
+    eps_im[E <= Eg] = 0
 
-    # eps = 1 + A*E0*C/_np.pi*(F(b,d,d.conjugate())) + F(d,d.conjugate(),b) + F(d.conjugate(),b,d)
-    #------------------------------------------------------------------------------
-    eps = eps_re + 1j*eps_im
-    return _np.sqrt(eps)
+    # Closed-form Re(epsilon) from Jellison-Modine (1996).
+    # If alpha is near zero (e.g. C ~ 2*E0), use a stable vectorized KK fallback.
+    alpha2 = 4.0 * E0**2 - C**2
+    if alpha2 > 1e-12:
+        alpha = _np.sqrt(alpha2)
+        gamma2 = E0**2 - C**2 / 2.0
+
+        a_log = (Eg**2 - E0**2) * E**2 + Eg**2 * C**2 - E0**2 * (E0**2 + 3.0 * Eg**2)
+        a_atan = (E**2 - E0**2) * (E0**2 + Eg**2) + Eg**2 * C**2
+        zeta4 = (E**2 - gamma2)**2 + (alpha**2) * C**2 / 4.0
+
+        ratio = (E0**2 + Eg**2 + alpha * Eg) / (E0**2 + Eg**2 - alpha * Eg)
+        atan_term = _np.pi - _np.arctan((2.0 * Eg + alpha) / C) + _np.arctan((alpha - 2.0 * Eg) / C)
+        atan_aux = _np.pi + 2.0 * _np.arctan(2.0 * (gamma2 - Eg**2) / (alpha * C))
+        log_ref = _np.sqrt((E0**2 - Eg**2)**2 + Eg**2 * C**2)
+
+        # Avoid log singularity at E=Eg in finite-precision arithmetic.
+        EmEg = _np.maximum(_np.abs(E - Eg), 1e-15)
+        E_safe = _np.maximum(E, 1e-15)
+
+        eps_re = (
+            A * C * a_log / (2.0 * _np.pi * zeta4 * alpha * E0) * _np.log(ratio)
+            - A * a_atan / (_np.pi * zeta4 * E0) * atan_term
+            + 2.0 * A * E0 * Eg * (E**2 - gamma2) / (_np.pi * zeta4 * alpha) * atan_aux
+            - A * E0 * C * (E**2 + Eg**2) / (_np.pi * zeta4 * E_safe) * _np.log(EmEg / (E + Eg))
+            + 2.0 * A * E0 * C * Eg / (_np.pi * zeta4) * _np.log(EmEg * (E + Eg) / log_ref)
+        )
+    else:
+        # Degenerate-alpha fallback: principal-value KK integral on a fixed grid.
+        e_max = max(float(E.max()) * 5.0, Eg + 50.0 * max(C, 1e-3), E0 + 50.0 * max(C, 1e-3))
+        xi = _np.linspace(max(Eg, 1e-6), e_max, 5000)
+        eps2_xi = A * E0 * C * (xi - Eg)**2
+        eps2_xi /= xi * ((xi**2 - E0**2)**2 + C**2 * xi**2)
+        eps2_xi[xi <= Eg] = 0
+
+        denom = xi[:, None]**2 - E[None, :]**2
+
+        dxi = xi[1] - xi[0]
+        pv_mask = _np.abs(xi[:, None] - E[None, :]) <= 2.0 * dxi
+        safe = ~pv_mask
+
+        num = xi[:, None] * eps2_xi[:, None]
+        integrand = _np.zeros_like(denom, dtype=float)
+        _np.divide(num, denom, out=integrand, where=safe)
+
+        eps_re = (2.0 / _np.pi) * _np.trapz(integrand, x=xi, axis=0)
+
+    eps = eps_re + 1j * eps_im
+    n_complex = _np.sqrt(eps)
+    return n_complex[0] if n_complex.size == 1 else n_complex
 
 def lorentz(wavelength, epsinf,wp,wn,gamma):
     '''
@@ -591,14 +658,107 @@ def multi_oscillator(wavelength, oscilator_dict):
     # Return refractive index from total dielectric response.
     return _np.sqrt(eps)
 
+def _as_1d_real(arr, name):
+    # Coerce targets/model outputs to 1D real vectors used by least_squares.
+    arr_1d = _as_1d_array(arr, name=name)
+    arr_1d = _np.real_if_close(arr_1d, tol=1000)
+    if _np.iscomplexobj(arr_1d):
+        raise ValueError(f"{name} must be real-valued")
+    return _np.asarray(arr_1d, float)
+
+def _normalize_fit_extra_params(specs):
+    if specs is None:
+        return {}, []
+    if not isinstance(specs, dict):
+        raise TypeError("fit_extra_params must be a dictionary or None")
+
+    normalized = {}
+    order = []
+    for name, spec in specs.items():
+        if not isinstance(spec, dict):
+            raise TypeError(f"fit_extra_params['{name}'] must be a dict")
+        if 'init' not in spec or 'bounds' not in spec:
+            raise ValueError(
+                f"fit_extra_params['{name}'] must contain 'init' and 'bounds'"
+            )
+
+        init_arr = _np.asarray(spec['init'], dtype=float)
+        shape = spec.get('shape', None)
+        if shape is None:
+            shape = init_arr.shape
+        else:
+            shape = tuple(shape)
+
+        if shape == ():
+            init_arr = _np.asarray(float(init_arr.reshape(-1)[0]), dtype=float)
+        else:
+            init_arr = _np.array(_np.broadcast_to(init_arr, shape), dtype=float, copy=True)
+
+        bounds = spec['bounds']
+        if not isinstance(bounds, (list, tuple)) or len(bounds) != 2:
+            raise ValueError(
+                f"fit_extra_params['{name}']['bounds'] must be (lower, upper)"
+            )
+
+        lb_raw = _np.asarray(bounds[0], dtype=float)
+        ub_raw = _np.asarray(bounds[1], dtype=float)
+
+        if shape == ():
+            lb_arr = _np.asarray(float(lb_raw.reshape(-1)[0]), dtype=float)
+            ub_arr = _np.asarray(float(ub_raw.reshape(-1)[0]), dtype=float)
+        else:
+            lb_arr = _np.array(_np.broadcast_to(lb_raw, shape), dtype=float, copy=True)
+            ub_arr = _np.array(_np.broadcast_to(ub_raw, shape), dtype=float, copy=True)
+
+        init_flat = init_arr.reshape(-1).astype(float)
+        lb_flat = lb_arr.reshape(-1).astype(float)
+        ub_flat = ub_arr.reshape(-1).astype(float)
+
+        if _np.any(lb_flat > ub_flat):
+            raise ValueError(f"fit_extra_params['{name}']: lower bounds exceed upper bounds")
+        if _np.any((init_flat < lb_flat) | (init_flat > ub_flat)):
+            raise ValueError(
+                f"fit_extra_params['{name}']: init must lie within bounds"
+            )
+
+        weight = float(spec.get('weight', 0.0))
+        if weight < 0:
+            raise ValueError(
+                f"fit_extra_params['{name}']['weight'] must be >= 0"
+            )
+
+        normalized[name] = {
+            'shape': shape,
+            'init_flat': init_flat,
+            'lb_flat': lb_flat,
+            'ub_flat': ub_flat,
+            'weight': weight,
+        }
+        order.append(name)
+    return normalized, order
+
+def _build_weight_block(weight_item, target_len, idx):
+    # Expand scalar weights or validate per-point weight arrays.
+    if _np.isscalar(weight_item):
+        return _np.ones(target_len, dtype=float) * float(weight_item)
+    w_block = _np.asarray(weight_item, float).reshape(-1)
+    if len(w_block) != target_len:
+        raise ValueError(
+            f"weights[{idx}] has length {len(w_block)} but target length is {target_len}"
+        )
+    return w_block
 
 def fit_to_oscillator(x, y_data,
                       oscillator_dict,
                       y_eval=None,
+                      args=(),
                       bounds=None,
                       weights=None,
                       fixed_params=None,
-                      x_units='um'):
+                      fit_extra_params=None,
+                      x_units='um', 
+                      least_squares_method='trf',
+                      verbose=0):
     '''
     Fit oscillator parameters to measured data.
 
@@ -609,17 +769,20 @@ def fit_to_oscillator(x, y_data,
     y_data : list or tuple
         Measured target data.
         - If y_eval is None: y_data must be [n_data, k_data].
-        - If y_eval is provided: y_data must match y_eval length,
-          e.g. [R_measured, T_measured].
+                - If y_eval is provided: y_data must have one entry per output
+                    returned by y_eval, e.g. [R_measured, T_measured].
     oscillator_dict : dict
         Dictionary with named models containing 'type' key and parameters.
         Format:
         {'model1': {'type': 'drude', 'epsinf': 1.5, 'wp': 10.0, 'gamma': 0.1}, ...}
-    y_eval : list or tuple of callables, optional
-        Custom evaluator functions. Each function must have signature
-        f(lam, nk) and return one modeled target array.
-        Example: y_eval = [fun_R, fun_T].
+    y_eval : callable, optional
+        Custom evaluator function with signature f(lam, nk, *args)
+        that returns one array or multiple arrays (tuple/list).
+        Example: y_eval = fun_RT where fun_RT returns (R_model, T_model).
         If None, legacy fitting to [n_data, k_data] is used.
+    args : tuple, optional
+        Extra arguments passed to y_eval following scipy convention.
+        For example, y_eval(lam, nk, *args). Default is ().
     bounds : dict, optional
         Partial bounds for specific parameters. Missing bounds use defaults.
         Format: {'model1': {'epsinf': (0, 2)}, 'model2': {'wp': (5, 20)}}
@@ -634,8 +797,25 @@ def fit_to_oscillator(x, y_data,
         Parameters to keep fixed (not optimized).
         Supported formats:
         {'model1': ['gamma', 'wp']} or [('model1', 'gamma'), ('model2', 'wp')]
+    fit_extra_params : dict, optional
+        Extra y_eval parameters to fit in custom mode (y_eval must be provided).
+        Format:
+        {
+            'param_name': {
+                'init': value_or_array,            # required
+                'bounds': (lower, upper),          # required
+                'shape': tuple_or_list,            # optional, defaults to init shape
+                'weight': float                    # optional, default 0.0
+            }
+        }
+        The optional weight adds quadratic regularization terms to the residual:
+        sqrt(weight) * (param - init).
     x_units : str, optional
         Units of x (default: 'um').
+    least_squares_method : str, optional
+        Method for scipy.optimize.least_squares (default: 'trf').
+    verbose : int, optional
+        Verbosity level for least_squares output (default: 0).
 
     Returns
     -------
@@ -643,47 +823,104 @@ def fit_to_oscillator(x, y_data,
         Oscillator dictionary with fitted and fixed parameters.
     OptimizeResult
         Output from scipy.optimize.least_squares.
+        Additional attributes are attached:
+        - fit_extra_params: structured fitted extra parameters passed to y_eval.
+        - fit_extra_flat: flattened fitted extra parameters.
     '''
-    def _to_1d_real(arr, name):
-        # Coerce targets/model outputs to 1D real vectors used by least_squares.
-        arr = _np.asarray(arr)
-        arr = _np.real_if_close(arr, tol=1000)
-        if _np.iscomplexobj(arr):
-            raise ValueError(f"{name} must be real-valued")
-        return _np.asarray(arr, float).reshape(-1)
 
     lam = _convert_units(x, x_units, to='um')
     lam = _np.asarray(lam, float)
 
+    if isinstance(args, tuple):
+        eval_args = args
+    else:
+        raise TypeError("args must be a tuple")
+
     legacy_mode = y_eval is None
+    y_eval_fn = None
+    y_eval_min_extra_args = 0
+
+    fit_extra_specs, fit_extra_order = _normalize_fit_extra_params(fit_extra_params)
+
+    if legacy_mode and len(fit_extra_order) > 0:
+        raise ValueError("fit_extra_params can only be used when y_eval is provided")
 
     if legacy_mode:
         # Legacy API path: y_data is interpreted as [n_data, k_data].
         if not isinstance(y_data, (list, tuple)) or len(y_data) != 2:
             raise ValueError("When y_eval is None, y_data must be [n_data, k_data]")
-        n_data = _to_1d_real(y_data[0], 'n_data')
-        k_data = _to_1d_real(y_data[1], 'k_data')
+        n_data = _as_1d_real(y_data[0], 'n_data')
+        k_data = _as_1d_real(y_data[1], 'k_data')
         y_data_blocks = [n_data, k_data]
-        y_eval_list = None
+        if len(eval_args) > 0:
+            raise ValueError("args can only be used when y_eval is provided")
     else:
-        # Custom API path: y_eval provides one forward model per target block.
-        if not isinstance(y_eval, (list, tuple)):
-            raise TypeError("y_eval must be a list or tuple of callables")
-        if not all(callable(fn) for fn in y_eval):
-            raise TypeError("All entries in y_eval must be callable")
+        # Custom API path: y_eval is one forward model returning all target blocks.
+        if not callable(y_eval):
+            raise TypeError("y_eval must be callable")
         if not isinstance(y_data, (list, tuple)):
             raise TypeError("y_data must be a list or tuple when y_eval is provided")
-        if len(y_data) != len(y_eval):
-            raise ValueError("y_data and y_eval must have the same length")
-        y_data_blocks = [_to_1d_real(arr, f'y_data[{i}]') for i, arr in enumerate(y_data)]
-        y_eval_list = list(y_eval)
+
+        # Check y_eval positional/keyword signature compatibility.
+        sig = _inspect.signature(y_eval)
+        params = list(sig.parameters.values())
+        pos_params = [p for p in params if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+        has_varargs = any(p.kind == p.VAR_POSITIONAL for p in params)
+        has_varkw = any(p.kind == p.VAR_KEYWORD for p in params)
+        max_positional = None if has_varargs else len(pos_params)
+
+        if max_positional is not None and max_positional < 2:
+            raise TypeError("y_eval must accept at least two positional arguments: lam and nk")
+
+        if max_positional is not None and len(eval_args) > (max_positional - 2):
+            raise ValueError(
+                f"y_eval accepts at most {max_positional - 2} extra positional arguments via args, "
+                f"but got {len(eval_args)}"
+            )
+
+        fit_extra_names = set(fit_extra_order)
+        accepted_kw_names = {
+            p.name for p in params
+            if p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)
+        }
+
+        if not has_varkw:
+            invalid = fit_extra_names - accepted_kw_names
+            if invalid:
+                raise ValueError(
+                    f"fit_extra_params has names not accepted by y_eval: {sorted(invalid)}"
+                )
+
+        # Positional parameters after lam, nk that are not supplied by args.
+        remaining_pos = pos_params[2 + len(eval_args):] if not has_varargs else []
+        for p in remaining_pos:
+            if p.kind == p.POSITIONAL_ONLY and p.default is p.empty:
+                raise ValueError(
+                    f"y_eval requires positional-only argument '{p.name}' not provided by args"
+                )
+            if p.kind == p.POSITIONAL_OR_KEYWORD and p.default is p.empty and p.name not in fit_extra_names:
+                raise ValueError(
+                    f"y_eval requires argument '{p.name}' not provided by args or fit_extra_params"
+                )
+
+        # Required keyword-only arguments must be provided by fit_extra_params.
+        for p in params:
+            if p.kind == p.KEYWORD_ONLY and p.default is p.empty and p.name not in fit_extra_names:
+                raise ValueError(
+                    f"y_eval requires keyword-only argument '{p.name}' not provided in fit_extra_params"
+                )
+
+        y_data_blocks = [_as_1d_real(arr, f'y_data[{i}]') for i, arr in enumerate(y_data)]
+        y_eval_fn = y_eval
+        min_positional = len([p for p in pos_params if p.default is p.empty])
+        y_eval_min_extra_args = max(0, min_positional - 2)
 
     target_sizes = [len(arr) for arr in y_data_blocks]
     y = _np.concatenate(y_data_blocks)
 
     default_bounds = {
-        'drude': {'epsinf': (0, 10), 'wp': (1E-2, 100), 'gamma': (1E-4, 10)},
-        'lorentz': {'epsinf': (0, 10), 'wp': (1E-2, 100), 'wn': (1E-2, 10), 'gamma': (1E-4, 10)},
+        'drude': {'epsinf': (0, 10), 'wp': (1E-5, 100), 'gamma': (1E-5, 10)},
+        'lorentz': {'epsinf': (0, 10), 'wp': (1E-5, 100), 'wn': (1E-2, 10), 'gamma': (1E-5, 10)},
         'tauc-lorentz': {'A': (0, 10), 'C': (0, 10), 'E0': (0, 10), 'Eg': (0, 10)},
         'gaussian': {'A': (0, 10), 'Br': (0, 10), 'E0': (0, 10)}
     }
@@ -704,6 +941,7 @@ def fit_to_oscillator(x, y_data,
     lb = []
     ub = []
     fitted_param_index = {}
+    fit_extra_index = {}
 
     for model_name, model_dict in oscillator_dict.items():
         if 'type' not in model_dict:
@@ -748,19 +986,21 @@ def fit_to_oscillator(x, y_data,
             lb.append(float(model_bounds[param_name][0]))
             ub.append(float(model_bounds[param_name][1]))
 
+    # Add fit_extra_params entries to optimizer vector.
+    for name in fit_extra_order:
+        spec = fit_extra_specs[name]
+        start = len(p0)
+        n = spec['init_flat'].size
+        fit_extra_index[name] = (start, n)
+
+        p0.extend(spec['init_flat'].tolist())
+        lb.extend(spec['lb_flat'].tolist())
+        ub.extend(spec['ub_flat'].tolist())
+
     p0 = _np.asarray(p0, float)
     p_bounds = (_np.asarray(lb, float), _np.asarray(ub, float))
-
-    def _build_weight_block(weight_item, target_len, idx):
-        # Expand scalar weights or validate per-point weight arrays.
-        if _np.isscalar(weight_item):
-            return _np.ones(target_len, dtype=float) * float(weight_item)
-        w_block = _np.asarray(weight_item, float).reshape(-1)
-        if len(w_block) != target_len:
-            raise ValueError(
-                f"weights[{idx}] has length {len(w_block)} but target length is {target_len}"
-            )
-        return w_block
+    n_osc_params = len(fitted_param_index)
+    n_fit_extra_params = sum(fit_extra_specs[name]['init_flat'].size for name in fit_extra_order)
 
     if weights is None:
         w = _np.ones_like(y, dtype=float)
@@ -804,6 +1044,18 @@ def fit_to_oscillator(x, y_data,
                     out[model_name][param_name] = float(model_dict[param_name])
         return out
 
+    def construct_fit_extra_dict(p):
+        out = {}
+        for name in fit_extra_order:
+            start, n = fit_extra_index[name]
+            shape = fit_extra_specs[name]['shape']
+            vals = _np.asarray(p[start:start+n], dtype=float)
+            if shape == ():
+                out[name] = float(vals[0])
+            else:
+                out[name] = vals.reshape(shape)
+        return out
+
     def resid(p):
         # Compute nk from current parameters before mapping to measured targets.
         osc = construct_oscillator_dict(p)
@@ -812,18 +1064,39 @@ def fit_to_oscillator(x, y_data,
         if legacy_mode:
             # Compare fitted nk directly against n/k measured blocks.
             model_blocks = [
-                _to_1d_real(nk.real, 'model_n'),
-                _to_1d_real(nk.imag, 'model_k')
+                _as_1d_real(nk.real, 'model_n'),
+                _as_1d_real(nk.imag, 'model_k')
             ]
         else:
-            # Apply custom forward functions (e.g., R/T) to nk.
-            model_blocks = []
-            for i, fn in enumerate(y_eval_list):
-                try:
-                    model_i = fn(lam, nk)
-                except Exception as exc:
-                    raise RuntimeError(f"y_eval[{i}] failed: {exc}") from exc
-                model_blocks.append(_to_1d_real(model_i, f'model_output[{i}]'))
+            extra_kwargs = construct_fit_extra_dict(p)
+            # Apply one custom forward function and split its outputs into blocks.
+            try:
+                model_out = y_eval_fn(lam, nk, *eval_args, **extra_kwargs)
+            except TypeError as exc:
+                if y_eval_min_extra_args > 0:
+                    raise RuntimeError(
+                        "y_eval failed due to argument mismatch; verify args matches "
+                        "y_eval(lam, nk, *args)"
+                    ) from exc
+                raise RuntimeError(f"y_eval failed: {exc}") from exc
+            except Exception as exc:
+                raise RuntimeError(f"y_eval failed: {exc}") from exc
+
+            if isinstance(model_out, (list, tuple)):
+                model_out_blocks = list(model_out)
+            else:
+                model_out_blocks = [model_out]
+
+            if len(model_out_blocks) != len(y_data_blocks):
+                raise ValueError(
+                    f"y_eval returned {len(model_out_blocks)} outputs but y_data has "
+                    f"{len(y_data_blocks)} target blocks"
+                )
+
+            model_blocks = [
+                _as_1d_real(model_out_blocks[i], f'model_output[{i}]')
+                for i in range(len(model_out_blocks))
+            ]
 
         for i, (model_i, data_i) in enumerate(zip(model_blocks, y_data_blocks)):
             if len(model_i) != len(data_i):
@@ -835,8 +1108,21 @@ def fit_to_oscillator(x, y_data,
         r = _np.concatenate([
             model_i - data_i for model_i, data_i in zip(model_blocks, y_data_blocks)
         ])
-        # Weighted residual vector consumed by least_squares.
-        return r * w
+        weighted = r * w
+
+        # Optional quadratic regularization around init for fit_extra params.
+        reg_terms = []
+        for name in fit_extra_order:
+            spec = fit_extra_specs[name]
+            if spec['weight'] > 0:
+                start, n = fit_extra_index[name]
+                vals = _np.asarray(p[start:start+n], dtype=float)
+                reg = _np.sqrt(spec['weight']) * (vals - spec['init_flat'])
+                reg_terms.append(reg)
+
+        if reg_terms:
+            return _np.concatenate([weighted] + reg_terms)
+        return weighted
 
     if p0.size == 0:
         # Shortcut when every parameter is fixed.
@@ -846,10 +1132,47 @@ def fit_to_oscillator(x, y_data,
         res.x = _np.array([], dtype=float)
         res.success = True
         res.cost = 0.5 * _np.sum(resid(_np.array([], dtype=float)) ** 2)
+        res.fit_extra_params = {}
+        res.fit_extra_flat = _np.array([], dtype=float)
     else:
-        res = least_squares(resid, p0, bounds=p_bounds, method='trf')
+        res = _least_squares(resid, p0, bounds=p_bounds, method=least_squares_method, verbose=verbose)
 
-    return construct_oscillator_dict(res.x), res
+        res.fit_extra_params = construct_fit_extra_dict(res.x)
+        if n_fit_extra_params > 0:
+            res.fit_extra_flat = _np.asarray(res.x[n_osc_params:n_osc_params + n_fit_extra_params], dtype=float)
+        else:
+            res.fit_extra_flat = _np.array([], dtype=float)
+
+    if p0.size == 0 and len(fit_extra_order) > 0:
+        # Populate metadata for fixed-only path if ever used with non-empty extras.
+        res.fit_extra_params = {
+            name: (float(fit_extra_specs[name]['init_flat'][0]) if fit_extra_specs[name]['shape'] == ()
+                   else fit_extra_specs[name]['init_flat'].reshape(fit_extra_specs[name]['shape']))
+            for name in fit_extra_order
+        }
+        res.fit_extra_flat = _np.concatenate([fit_extra_specs[name]['init_flat'] for name in fit_extra_order])
+
+    # store results into a class with attributes for the fitted oscillator parameters and lam range
+    class _OscillatorFit:
+        pass
+
+    oscillator_fit = _OscillatorFit()
+    oscillator_fit.model = construct_oscillator_dict(res.x)
+    oscillator_fit.lam_range = (float(lam.min()), float(lam.max()))
+    oscillator_fit.lam_units = 'um'
+
+    return oscillator_fit, res
+
+def print_oscillator_params(oscillator_dict):
+    '''
+    Utility function to print oscillator parameters in a readable format.
+    '''
+    for model_name, model_dict in oscillator_dict.items():
+        print(f"Model: {model_name} (type: {model_dict['type']})")
+        for param_name, value in model_dict.items():
+            if param_name != 'type':
+                print(f"  {param_name}: {value:.3f} eV")
+        print()
 
 def emt_multilayer_sphere(D: _List[float],
                           Np: _List[_Union[float, _np.ndarray]],
@@ -1006,13 +1329,13 @@ def eps_real_kkr(wavelength, eps_imag, eps_inf = 0, int_range = (0, _np.inf), cs
     cshift = complex(0, cshift)
     w_i = _convert_units(wavelength, 'um', 'eV')
 
-    if  isinstance(eps_imag, Callable):
+    if  isinstance(eps_imag, _Callable):
         a, b = int_range # set integration range
         def integration_element(w_r):
             factor = lambda w: w / (w**2 - w_r**2 + cshift)
             real_int = lambda w: (eps_imag(w) * factor(w)).real
             imag_int = lambda w: (eps_imag(w) * factor(w)).imag
-            total = quad(real_int, a,b)[0] + 1j*quad(imag_int, a,b)[0]
+            total = _quad(real_int, a,b)[0] + 1j*_quad(imag_int, a,b)[0]
             return eps_inf + (2/_np.pi)*total
         
     elif isinstance(eps_imag, _np.ndarray) or isinstance(eps_imag,float):

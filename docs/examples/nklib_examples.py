@@ -69,7 +69,7 @@ def fit_demo():
         initial_guess,
     )
 
-    fitted = nk.multi_oscillator(lam, fitted_oscillator)
+    fitted = nk.multi_oscillator(lam, fitted_oscillator.model)
 
     fig, ax = plt.subplots(figsize=(7, 3))
     ax.plot(lam, target.real, label="Target n")

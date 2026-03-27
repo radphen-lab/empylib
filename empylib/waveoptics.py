@@ -10,6 +10,13 @@ Created on Sun Nov  7 17:25:53 2021
 import numpy as _np
 from .utils import _as_1d_array, _normalize_multilayer_inputs
 
+__all__ = (
+    'interface',
+    'multilayer',
+    'incoh_multilayer',
+    'snell',
+)
+
 
 def _resolve_polarization(polarization):
     """Normalize polarization input.

@@ -1,31 +1,33 @@
-from typing import Optional, List, Dict, Any, Iterable, Tuple
-import csv, re
-import pandas as pd
-from pathlib import Path
-import re
+from typing import Optional as _Optional, List as _List, Dict as _Dict, Any as _Any, Iterable as _Iterable, Tuple as _Tuple
+import csv as _csv
+import re as _re
+import pandas as _pd
+from pathlib import Path as _Path
 
-def _sniff_dialect(lines: List[str]):
+__all__ = ('read_uvvis', 'find_uvvis_samples', 'sample_uvvis')
+
+def _sniff_dialect(lines: _List[str]):
     """
     Try to detect the delimiter style (dialect) used in a text/CSV-like file.
 
     Parameters
     ----------
-    lines : List[str]
-        List of lines from the file (usually read in advance).
+    lines : _List[str]
+        _List of lines from the file (usually read in advance).
         Only the first few lines are used for detection.
 
     Returns
     -------
-    csv.Dialect
+    _csv.Dialect
         A `Dialect` object describing how the file is structured
-        (delimiter, quotechar, etc.), suitable for passing to `csv.reader`.
+        (delimiter, quotechar, etc.), suitable for passing to `_csv.reader`.
 
     How it works
     ------------
     - Joins up to the first 10 lines of the file into a single string.
-    - Uses Python's built-in `csv.Sniffer.sniff` to guess whether the file
+    - Uses Python's built-in `_csv.Sniffer.sniff` to guess whether the file
       uses commas, tabs, or semicolons as delimiters.
-    - If detection fails (raises `csv.Error`), falls back to a simple custom
+    - If detection fails (raises `_csv.Error`), falls back to a simple custom
       dialect that assumes comma-delimited text with standard quoting rules.
 
     Limitations
@@ -40,7 +42,7 @@ def _sniff_dialect(lines: List[str]):
     -----
     For maximum robustness, you could extend this function to look beyond the
     first 10 lines (or specifically locate numeric/tabular rows) before calling
-    `csv.Sniffer`. This current implementation is a "good enough" heuristic
+    `_csv.Sniffer`. This current implementation is a "good enough" heuristic
     for most Shimadzu/PerkinElmer exports.
     """
     # Take at most the first 10 lines of the file as a detection sample
@@ -48,38 +50,38 @@ def _sniff_dialect(lines: List[str]):
 
     try:
         # Let the built-in Sniffer guess the delimiter
-        return csv.Sniffer().sniff(sample, delimiters=",\t;")
-    except csv.Error:
+        return _csv.Sniffer().sniff(sample, delimiters=",\t;")
+    except _csv.Error:
         # If detection fails, define a minimal fallback dialect
-        class _D(csv.Dialect):
+        class _D(_csv.Dialect):
             delimiter = ","        # assume comma-separated
             quotechar = '"'        # allow quoted strings with "
             escapechar = None
             doublequote = True
             skipinitialspace = False
             lineterminator = "\n"
-            quoting = csv.QUOTE_MINIMAL
+            quoting = _csv.QUOTE_MINIMAL
         return _D()
 
-def _tokenize_lines(lines: List[str]) -> List[List[str]]:
+def _tokenize_lines(lines: _List[str]) -> _List[_List[str]]:
     """
     Convert a list of raw text lines into tokenized (split) rows.
 
     Parameters
     ----------
-    lines : List[str]
+    lines : _List[str]
         Raw text lines from a UV-Vis data file (Shimadzu, PerkinElmer, etc.).
 
     Returns
     -------
-    List[List[str]]
+    _List[_List[str]]
         A list of rows, where each row is itself a list of string tokens
         representing the fields (columns) in that line.
 
     How it works
     ------------
     1. Uses `_sniff_dialect` to guess the delimiter (comma, tab, semicolon).
-    2. Passes all lines through Python's `csv.reader` with that dialect.
+    2. Passes all lines through Python's `_csv.reader` with that dialect.
     3. For each row, strips whitespace and surrounding quotes from fields.
     4. Drops empty strings (which can occur if there are extra delimiters).
     5. If the row only has one field but that field still contains spaces/tabs,
@@ -96,9 +98,9 @@ def _tokenize_lines(lines: List[str]) -> List[List[str]]:
     # Step 1: try to guess the delimiter using first 10 lines
     dialect = _sniff_dialect(lines)
 
-    rows: List[List[str]] = []
+    rows: _List[_List[str]] = []
     # Step 2: feed all lines into the CSV reader
-    for row in csv.reader(lines, dialect):
+    for row in _csv.reader(lines, dialect):
         # Step 3: clean up each field by stripping spaces and quotes
         cleaned = [field.strip().strip('"').strip("'") for field in row]
         # Step 4: remove empty fields (from multiple delimiters, etc.)
@@ -107,7 +109,7 @@ def _tokenize_lines(lines: List[str]) -> List[List[str]]:
         # Step 5: fallback — if we only got one field but it still has spaces/tabs,
         # split it again using whitespace regex.
         if len(cleaned) == 1 and (" " in cleaned[0] or "\t" in cleaned[0]):
-            toks = re.split(r"\s+", cleaned[0].strip())
+            toks = _re.split(r"\s+", cleaned[0].strip())
             cleaned = [t for t in toks if t]  # drop empty tokens
 
         # Collect the cleaned row
@@ -115,13 +117,13 @@ def _tokenize_lines(lines: List[str]) -> List[List[str]]:
 
     return rows
 
-def _is_two_numeric(row: List[str]) -> bool:
+def _is_two_numeric(row: _List[str]) -> bool:
     """
     Check whether a row contains at least two numeric-like values.
 
     Parameters
     ----------
-    row : List[str]
+    row : _List[str]
         A tokenized row (list of strings), typically produced by `_tokenize_lines`.
 
     Returns
@@ -136,7 +138,7 @@ def _is_two_numeric(row: List[str]) -> bool:
     - This is used to locate the start of the numeric data region in a file
       (e.g. skipping headers until the first row of actual tabulated numbers).
     - It tolerates values like "220.0", "0.164", or "85.5%".
-    - Any exception during float conversion results in a False return.
+    - _Any exception during float conversion results in a False return.
     """
     # Must have at least two tokens to test
     if len(row) < 2:
@@ -150,21 +152,20 @@ def _is_two_numeric(row: List[str]) -> bool:
         # If conversion fails (non-numeric strings, missing values, etc.)
         return False
 
-from typing import List, Optional
 
-def _first_numeric_idx(rows: List[List[str]]) -> Optional[int]:
+def _first_numeric_idx(rows: _List[_List[str]]) -> _Optional[int]:
     """
     Find the index of the first row that looks like numeric data.
 
     Parameters
     ----------
-    rows : List[List[str]]
+    rows : _List[_List[str]]
         A list of tokenized rows (each row is a list of strings),
         typically produced by `_tokenize_lines`.
 
     Returns
     -------
-    Optional[int]
+    _Optional[int]
         The index (0-based) of the first row where `_is_two_numeric(row)` is True,
         meaning the row appears to contain at least two numeric-like values.
         Returns None if no such row is found.
@@ -207,7 +208,7 @@ def _to_float(tok: str) -> float:
     """
     return float(tok.replace("%", "").strip())
 
-def _read_shimadzu_raw(path: str) -> Dict[str, Any]:
+def _read_shimadzu_raw(path: str) -> _Dict[str, _Any]:
     """
     Read a Shimadzu UV-Vis exported text file and extract raw components.
 
@@ -217,17 +218,17 @@ def _read_shimadzu_raw(path: str) -> Dict[str, Any]:
     Parameters
     ----------
     path : str
-        Path to a Shimadzu `.txt` file.
+        _Path to a Shimadzu `.txt` file.
 
     Returns
     -------
-    Dict[str, Any]
+    _Dict[str, _Any]
         A dictionary containing:
         - "instrument": str, always "Shimadzu"
         - "sample_name": str or None, sample name from the first header line
-        - "header_lines": List[str], raw header lines (after removing comments)
-        - "header_rows": List[List[str]], tokenized header rows
-        - "data_rows": List[List[str]], tokenized data rows (tabulated values)
+        - "header_lines": _List[str], raw header lines (after removing comments)
+        - "header_rows": _List[_List[str]], tokenized header rows
+        - "data_rows": _List[_List[str]], tokenized data rows (tabulated values)
         - "col1_from_file": str or None, first column name from the file
         - "col2_from_file": str or None, second column name from the file
 
@@ -287,7 +288,7 @@ def _read_shimadzu_raw(path: str) -> Dict[str, Any]:
     }
 
 
-def _read_perkinelmer_raw(path: str) -> Dict[str, Any]:
+def _read_perkinelmer_raw(path: str) -> _Dict[str, _Any]:
     """
     Read a PerkinElmer UV-Vis exported ASCII (.asc) file and extract raw components.
 
@@ -298,21 +299,21 @@ def _read_perkinelmer_raw(path: str) -> Dict[str, Any]:
     Parameters
     ----------
     path : str
-        Path to a PerkinElmer `.asc` file.
+        _Path to a PerkinElmer `.asc` file.
 
     Returns
     -------
-    Dict[str, Any]
+    _Dict[str, _Any]
         Dictionary containing:
         - "instrument": str
             Always "PerkinElmer".
         - "sample_name": str or None
             Sample name if detected from header lines (keywords like "Sample", "Title", "Name").
-        - "header_lines": List[str]
+        - "header_lines": _List[str]
             Raw header lines before the numeric block.
-        - "header_rows": List[List[str]]
+        - "header_rows": _List[_List[str]]
             Tokenized header lines (split into fields).
-        - "data_rows": List[List[str]]
+        - "data_rows": _List[_List[str]]
             Tokenized numeric data rows (tabulated values).
         - "col1_from_file": str or None
             First column name if detected in header.
@@ -343,7 +344,7 @@ def _read_perkinelmer_raw(path: str) -> Dict[str, Any]:
     first_data_idx = _first_numeric_idx(rows)
     if first_data_idx is None:
         # Fallback: regex match for a line with at least two numbers
-        num_re = re.compile(
+        num_re = _re.compile(
             r"^\s*([+-]?\d+(\.\d+)?([eE][+-]?\d+)?)"
             r"\s+([+-]?\d+(\.\d+)?([eE][+-]?\d+)?)(\s|,|;|$)"
         )
@@ -362,7 +363,7 @@ def _read_perkinelmer_raw(path: str) -> Dict[str, Any]:
     # Try to extract sample name from header (keywords: Sample, Title, Name)
     sample_name = None
     for ln in header_lines:
-        m = re.search(r"(?:Sample(?:\s*ID)?|Title|Name)\s*[:=]\s*(.+)", ln, re.IGNORECASE)
+        m = _re.search(r"(?:Sample(?:\s*ID)?|Title|Name)\s*[:=]\s*(.+)", ln, _re.IGNORECASE)
         if m:
             sample_name = m.group(1).strip().strip('"')
             break
@@ -387,7 +388,7 @@ def _read_perkinelmer_raw(path: str) -> Dict[str, Any]:
     }
 
 # ---- Derive missing components per family: tot = dif + spec ----
-def _derive_family(df: pd.DataFrame, tot: str, dif: str, spec: str) -> None:
+def _derive_family(df: _pd.DataFrame, tot: str, dif: str, spec: str) -> None:
     have = {c for c in (tot, dif, spec) if c in df.columns}
     if len(have) == 2:
         if tot not in have:
@@ -401,9 +402,9 @@ def _derive_family(df: pd.DataFrame, tot: str, dif: str, spec: str) -> None:
     return df
 
 def read_uvvis(path: str,
-               vendor: Optional[str] = None,
-               col1_name: Optional[str] = None,
-               col2_name: Optional[str] = None) -> pd.DataFrame:
+               vendor: _Optional[str] = None,
+               col1_name: _Optional[str] = None,
+               col2_name: _Optional[str] = None) -> _pd.DataFrame:
     """
     Unified UV-Vis reader for Shimadzu (.txt) and PerkinElmer (.asc) files.
 
@@ -414,7 +415,7 @@ def read_uvvis(path: str,
     Parameters
     ----------
     path : str
-        Path to the UV-Vis data file.
+        _Path to the UV-Vis data file.
     
     vendor : str, optional
         Explicit vendor name ("shimadzu" or "perkinelmer").
@@ -439,7 +440,7 @@ def read_uvvis(path: str,
         - "header_lines": raw header lines
     """
     # --- Vendor dispatch ---
-    p = Path(path)
+    p = _Path(path)
     v = (vendor or "").strip().lower()
 
     if not v:
@@ -467,11 +468,11 @@ def read_uvvis(path: str,
 
     if second is None:
         hdr_text = " ".join(raw.get("header_lines", []))
-        if re.search(r"%\s*T|transmittance", hdr_text, re.IGNORECASE):
+        if _re.search(r"%\s*T|transmittance", hdr_text, _re.IGNORECASE):
             second = "T%"
-        elif re.search(r"reflect|R[:%]?", hdr_text, re.IGNORECASE):
+        elif _re.search(r"reflect|R[:%]?", hdr_text, _re.IGNORECASE):
             second = "R%"
-        elif re.search(r"\babs\b|absorb", hdr_text, re.IGNORECASE):
+        elif _re.search(r"\babs\b|absorb", hdr_text, _re.IGNORECASE):
             second = "Absorbance"
         else:
             if raw.get("instrument") == "Shimadzu":
@@ -479,8 +480,8 @@ def read_uvvis(path: str,
             second = "value"
 
     # --- Parse numeric data ---
-    wl_vals: List[float] = []
-    y_vals: List[float] = []
+    wl_vals: _List[float] = []
+    y_vals: _List[float] = []
     for row in raw["data_rows"]:
         if len(row) >= 2:
             try:
@@ -505,7 +506,7 @@ def read_uvvis(path: str,
             second = "value (fraction)"
 
     # --- Build DataFrame ---
-    df = pd.DataFrame({wavename: wl_vals, second: y_vals}).set_index(wavename)
+    df = _pd.DataFrame({wavename: wl_vals, second: y_vals}).set_index(wavename)
 
     # Attach metadata
     df.attrs["instrument"]   = raw.get("instrument")
@@ -515,11 +516,11 @@ def read_uvvis(path: str,
     return df
 
 def find_uvvis_samples(
-    search_dirs: Optional[Iterable[str]] = None,
-    tags: Optional[List[str]] = None,
-    aliases: Optional[Dict[str, List[str]]] = None,
-    exts: Tuple[str, ...] = (".txt", ".asc"),
-) -> List[str]:
+    search_dirs: _Optional[_Iterable[str]] = None,
+    tags: _Optional[_List[str]] = None,
+    aliases: _Optional[_Dict[str, _List[str]]] = None,
+    exts: _Tuple[str, ...] = (".txt", ".asc"),
+) -> _List[str]:
     """
     Find UV-Vis sample names by scanning files named <tag>_<sample><ext>.
     - Case-insensitive for tags/aliases and extensions.
@@ -527,16 +528,16 @@ def find_uvvis_samples(
     
     Parameters
     ----------
-    search_dirs : Iterable[str], optional
-        List of directories to search for files.
+    search_dirs : _Iterable[str], optional
+        _List of directories to search for files.
         If None, defaults to ["."], the current directory.
     
-    tags : List[str], optional
-        List of tags to look for in filenames.
+    tags : _List[str], optional
+        _List of tags to look for in filenames.
         If None, defaults to:
         ["Rtot", "Ttot", "Rspec", "Tspec", "Rdif", "Tdif"].
     
-    aliases : Dict[str, List[str]], optional
+    aliases : _Dict[str, _List[str]], optional
         Mapping of tag → list of alternative names to try.
         If None, defaults to:
         {
@@ -547,13 +548,13 @@ def find_uvvis_samples(
             "Rdif": ["Rdif", "Rdiff", "Rdiffuse"],
             "Tdif": ["Tdif", "Tdiff", "Tdiffuse"],
         }.
-    exts : Tuple[str, ...], optional
-        Tuple of file extensions to consider (case-insensitive).
+    exts : _Tuple[str, ...], optional
+        _Tuple of file extensions to consider (case-insensitive).
         Defaults to (".txt", ".asc").
     Returns
     -------
-    List[str]
-        List of unique sample names found (order not guaranteed).
+    _List[str]
+        _List of unique sample names found (order not guaranteed).
     """
     if search_dirs is None:
         search_dirs = ["."]
@@ -576,11 +577,11 @@ def find_uvvis_samples(
             alias_flat.add(a)
     # sort by length desc to avoid partial matches (e.g., 'T' before 'Ttot')
     alias_sorted = sorted(alias_flat, key=len, reverse=True)
-    tag_re = re.compile(rf"^({'|'.join(re.escape(a) for a in alias_sorted)})[ _-]+", re.IGNORECASE)
+    tag_re = _re.compile(rf"^({'|'.join(_re.escape(a) for a in alias_sorted)})[ _-]+", _re.IGNORECASE)
 
-    samples: List[str] = []
+    samples: _List[str] = []
     for d in search_dirs:
-        base = Path(d)
+        base = _Path(d)
         if not base.exists():
             continue
         for p in base.iterdir():
@@ -596,11 +597,11 @@ def find_uvvis_samples(
     return samples
 
 def sample_uvvis(sample: str = None,
-                 search_dirs: Optional[Iterable[str]] = None,
-                 tags: Optional[List[str]] = None,
-                 aliases: Optional[Dict[str, List[str]]] = None,
-                 exts: Tuple[str, ...] = (".txt", ".asc"),
-                 ref_standard: str = "spectralon") -> pd.DataFrame:
+                 search_dirs: _Optional[_Iterable[str]] = None,
+                 tags: _Optional[_List[str]] = None,
+                 aliases: _Optional[_Dict[str, _List[str]]] = None,
+                 exts: _Tuple[str, ...] = (".txt", ".asc"),
+                 ref_standard: str = "spectralon") -> _pd.DataFrame:
     """
     Aggregate UV-Vis measurements for a given sample into a single DataFrame.
     Applies reflectance correction using a standard reference spectrum
@@ -621,16 +622,16 @@ def sample_uvvis(sample: str = None,
         Sample name to look for in filenames (e.g. "MySample").
         If None, defaults to the sample files stored in "search_dirs".
     
-    search_dirs : Iterable[str], optional
-        List of directories to search for files.
+    search_dirs : _Iterable[str], optional
+        _List of directories to search for files.
         If None, defaults to ["."], the current directory.
     
-    tags : List[str], optional
-        List of tags to look for in filenames.
+    tags : _List[str], optional
+        _List of tags to look for in filenames.
         If None, defaults to:
         ["Rtot", "Ttot", "Rspec", "Tspec", "Rdif", "Tdif"].
     
-    aliases : Dict[str, List[str]], optional
+    aliases : _Dict[str, _List[str]], optional
         Mapping of tag → list of alternative names to try.
         If None, defaults to:
         {
@@ -641,12 +642,12 @@ def sample_uvvis(sample: str = None,
             "Rdif": ["Rdif", "Rdiff", "Rdiffuse"],
             "Tdif": ["Tdif", "Tdiff", "Tdiffuse"],
         }.
-    exts : Tuple[str, ...], optional
-        Tuple of file extensions to consider (case-insensitive).
+    exts : _Tuple[str, ...], optional
+        _Tuple of file extensions to consider (case-insensitive).
         Defaults to (".txt", ".asc").
 
     ref_standard : str, optional
-        Path to the reference standard spectrum CSV file.
+        _Path to the reference standard spectrum CSV file.
         Default is "spectralon.csv"
 
     Returns
@@ -680,12 +681,12 @@ def sample_uvvis(sample: str = None,
         }
 
     # ---- Find first matching file per tag (exact filename; sample kept exact) ----
-    found: Dict[str, Path] = {}
+    found: _Dict[str, _Path] = {}
     for tag in tags:
         for alias in aliases.get(tag, [tag]):
             found_in_any_dir = False
             for d in search_dirs:
-                base = Path(d)
+                base = _Path(d)
                 candidates = [f"{a}_{sample}{ext}" 
                               for a in (alias, alias.lower()) 
                               for ext in exts]
@@ -721,7 +722,7 @@ def sample_uvvis(sample: str = None,
         raise ValueError(f"Found files for '{sample}', but none could be parsed.")
 
     # ---- Outer-join on union wavelength grid ----
-    out = pd.concat(series_list, axis=1, join="outer").sort_index()
+    out = _pd.concat(series_list, axis=1, join="outer").sort_index()
 
     # ---- Interpolate each column onto the union grid (INTERIOR ONLY) ----
     # This fills NaNs created by mismatched wavelength arrays, but does not extrapolate ends.
@@ -739,13 +740,13 @@ def sample_uvvis(sample: str = None,
     out.attrs["sample_name"] = sample
 
     # Final tidy-up: numeric dtypes and sorted columns
-    out = out.apply(pd.to_numeric, errors="coerce").sort_index(axis=1)
+    out = out.apply(_pd.to_numeric, errors="coerce").sort_index(axis=1)
 
     return out
 
-# def rt_style_mapper(sample: pd.DataFrame,
-#                 linestyles: Dict = {"tot": "-", "spec": ":", "dif": "--"},
-#                 colors: Dict = {"R": "r", "T": "b", "A": "k"}) -> str:
+# def rt_style_mapper(sample: _pd.DataFrame,
+#                 linestyles: _Dict = {"tot": "-", "spec": ":", "dif": "--"},
+#                 colors: _Dict = {"R": "r", "T": "b", "A": "k"}) -> str:
 #     """
 #     Generate matplotlib line styles for UV-Vis DataFrame columns.
 #     E.g. {"Rtot": "-r", "Tspec": ":b", "Rdif": "--r"}.
@@ -755,17 +756,17 @@ def sample_uvvis(sample: str = None,
 #     sample : pandas.DataFrame
 #         DataFrame with columns named like Rtot, Tspec, Rdif, Atot, etc.
     
-#     linestyles : Dict, optional
+#     linestyles : _Dict, optional
 #         Mapping of line type keywords to matplotlib line styles.
 #         Defaults to {"tot": "-", "spec": ":", "dif": "--"}.
     
-#     colors : Dict, optional
+#     colors : _Dict, optional
 #         Mapping of measurement type keywords to colors.
 #         Defaults to {"R": "r", "T": "b", "A": "k"}.
     
 #     Returns
 #     -------
-#     Dict[str, str]
+#     _Dict[str, str]
 #         Dictionary mapping each column name to a matplotlib style string.
 #         E.g. {"Rtot": "-r", "Tspec": ":b", "Rdif": "--r"}
     
@@ -800,15 +801,15 @@ def sample_uvvis(sample: str = None,
             
 #     return style, label
 
-def _correct_reflectance(out: pd.DataFrame, ref_standard: str) -> None:
-    # Path relative to the empylib package
+def _correct_reflectance(out: _pd.DataFrame, ref_standard: str) -> None:
+    # _Path relative to the empylib package
     ref_standard += "" if ref_standard.endswith(".csv") else ".csv"
 
-    ref_path = Path(__file__).parent / "IS_reflectance_reference" / ref_standard
+    ref_path = _Path(__file__).parent / "IS_reflectance_reference" / ref_standard
     if not ref_path.is_file():
         raise FileNotFoundError(f"Reflectance standard not found: {ref_path}")
 
-    ref = pd.read_csv(ref_path)
+    ref = _pd.read_csv(ref_path)
     # Expect first column = wavelength (µm or nm), second = reflectance fraction (0–1)
     ref.columns = [c.strip().lower() for c in ref.columns]
     wl_col = ref.columns[0]

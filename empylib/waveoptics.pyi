@@ -1,0 +1,13 @@
+from typing import Any
+
+__all__ = (
+    'interface',
+    'multilayer',
+    'incoh_multilayer',
+    'snell',
+)
+
+def interface(*args: Any, **kwargs: Any) -> Any: ...
+def multilayer(*args: Any, **kwargs: Any) -> Any: ...
+def incoh_multilayer(*args: Any, **kwargs: Any) -> Any: ...
+def snell(*args: Any, **kwargs: Any) -> Any: ...

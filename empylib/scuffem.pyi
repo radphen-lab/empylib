@@ -1,0 +1,13 @@
+from typing import Any
+
+__all__ = (
+    'make_spectral_files',
+    'read_scatter_PFT',
+    'read_avescatter',
+    'clean_data',
+)
+
+def make_spectral_files(*args: Any, **kwargs: Any) -> Any: ...
+def read_scatter_PFT(*args: Any, **kwargs: Any) -> Any: ...
+def read_avescatter(*args: Any, **kwargs: Any) -> Any: ...
+def clean_data(*args: Any, **kwargs: Any) -> Any: ...

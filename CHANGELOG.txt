@@ -4,3 +4,10 @@ Change Log
 0.0.1 (17/05/2022)
 ----------------------------
 - First Release
+
+0.0.2 (27/03/2026)
+----------------------------
+- Hardened module API visibility by adding explicit __all__ exports across empylib modules.
+- Standardized internal dependency imports to private-style aliases (leading underscore) to reduce autocomplete leakage of third-party/internal symbols.
+- Kept only intended public functions/constants visible in module-level star imports.
+- Added .pyi stub files so VS Code/Pylance autocomplete surfaces only the supported public API and hides private module helpers.

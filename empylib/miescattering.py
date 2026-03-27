@@ -5,12 +5,24 @@ Created on Mon Nov 22 23:38:11 2021
 @author: PanxoPanza
 """
 import numpy as _np
-from numpy import pi, exp, conj, imag, real, sqrt
-from scipy.special import jv, yv
-from .nklib import emt_brugg, emt_multilayer_sphere
+from numpy import pi as _pi, exp as _exp, conj as _conj, imag as _imag, real as _real, sqrt as _sqrt
+from scipy.special import jv as _jv, yv as _yv
+from .nklib import emt_brugg as _emt_brugg, emt_multilayer_sphere as _emt_multilayer_sphere
 from .utils import _as_1d_array, _check_mie_inputs, _check_theta, _hide_signature
 import pandas as _pd
 from typing import Union as _Union, Optional as _Optional, List as _List
+
+__all__ = (
+    'scatter_efficiency',
+    'scatter_coefficients',
+    'scatter_amplitude',
+    'scatter_stokes',
+    'phase_scatt_HG',
+    'scatter_from_phase_function',
+    'structure_factor_PY',
+    'phase_scatt_ensemble',
+    'cross_section_ensemble',
+)
 
 def _log_RicattiBessel(x,nmax,nmx):
     '''
@@ -69,19 +81,19 @@ def _log_RicattiBessel(x,nmax,nmx):
     Rnx = _np.zeros((len(x),len(n)),dtype=_np.complex128) 
     for ix in range(len(x)):
         
-        # note that 0.5*(1 - exp(-2j*x)) = 0 if x = pi*n
+        # note that 0.5*(1 - _exp(-2j*x)) = 0 if x = _pi*n
         # I added this clause for those cases
-        if imag(x[ix]) == 0 and _np.mod(real(x[ix]),pi) == 0:
+        if _imag(x[ix]) == 0 and _np.mod(_real(x[ix]),_pi) == 0:
             nu = (n + 1) + 0.5
-            py =  sqrt(0.5*pi*x[ix])*jv(nu,x[ix])
-            chy = sqrt(0.5*pi*x[ix])*yv(nu,x[ix])
+            py =  _sqrt(0.5*_pi*x[ix])*_jv(nu,x[ix])
+            chy = _sqrt(0.5*_pi*x[ix])*_yv(nu,x[ix])
             gsy = py + 1j*chy
             Rnx[ix,:] = py/gsy
         
         # otherwise just do normal upward recursion
         else :            
             for i in range(nmax):
-                if i == 0 : Rim1x = 0.5*(1 - exp(-2j*x[ix]))
+                if i == 0 : Rim1x = 0.5*(1 - _exp(-2j*x[ix]))
                 else :      Rim1x = Rnx[ix,i-1]
                 
                 Rnx[ix,i] = Rim1x*(Gnx[ix,i] + (i + 1)/x[ix])/  \
@@ -181,8 +193,8 @@ def _get_coated_coefficients(m,x, nmax=None):
     # Get Bessel-Ricatti functions and derivatives for last shell layer
     n = _np.array(range(1,nmax+1))
     nu = n+0.5
-    phi = _np.sqrt(0.5*pi*ka)*jv(nu,ka) # phi(n,ka)
-    chi = _np.sqrt(0.5*pi*ka)*yv(nu,ka) # chi(n,ka)
+    phi = _np.sqrt(0.5*_pi*ka)*_jv(nu,ka) # phi(n,ka)
+    chi = _np.sqrt(0.5*_pi*ka)*_yv(nu,ka) # chi(n,ka)
     xi  = phi + 1j*chi                    # xi(n,ka)
     
     return an.reshape(-1), bn.reshape(-1), phi, Dn1[-1,:].reshape(-1), xi, Gn1[-1,:].reshape(-1)
@@ -238,9 +250,9 @@ def _cross_section_at_lam(m,x,nmax = None):
     #------------------------------------------------------------------
     (an, bn, py, Dy, xy, Gy) = _get_coated_coefficients(m,x,nmax)
 
-    if imag(y) > 1E-8 :
-        imy = 2*imag(y)
-        ft = imy**2/(1 + (imy - 1)*exp(imy))
+    if _imag(y) > 1E-8 :
+        imy = 2*_imag(y)
+        ft = imy**2/(1 + (imy - 1)*_exp(imy))
     else:
         ft = 2
     
@@ -250,23 +262,23 @@ def _cross_section_at_lam(m,x,nmax = None):
     #------------------------------------------------------------------
     # Extinction efficiency
     #------------------------------------------------------------------
-    en = (2*n+1)*imag((- 2j*py*conj(py)*imag(Dy)         \
-                       + conj(an)*conj(xy)*py*Dy         \
-                       - conj(bn)*conj(xy)*py*conj(Gy)   \
-                       + an*xy*conj(py)*Gy               \
-                       - bn*xy*conj(py)*conj(Dy))        \
+    en = (2*n+1)*_imag((- 2j*py*_conj(py)*_imag(Dy)         \
+                       + _conj(an)*_conj(xy)*py*Dy         \
+                       - _conj(bn)*_conj(xy)*py*_conj(Gy)   \
+                       + an*xy*_conj(py)*Gy               \
+                       - bn*xy*_conj(py)*_conj(Dy))        \
                        /y)
     q = _np.sum(en)
-    Qext = real(1/real(y)*ft*q)    
+    Qext = _real(1/_real(y)*ft*q)    
     
     #------------------------------------------------------------------
     # Scattering efficiency
     #------------------------------------------------------------------
-    en = (2*n+1)*imag((+ _np.abs(an*xy)**2*Gy                \
-                       - _np.abs(bn*xy)**2*conj(Gy)         \
+    en = (2*n+1)*_imag((+ _np.abs(an*xy)**2*Gy                \
+                       - _np.abs(bn*xy)**2*_conj(Gy)         \
                        )/y)
     q = _np.sum(en)
-    Qsca = real(1/real(y)*ft*q)
+    Qsca = _real(1/_real(y)*ft*q)
     
     #------------------------------------------------------------------
     # Asymmetry parameter
@@ -276,25 +288,25 @@ def _cross_section_at_lam(m,x,nmax = None):
     anp1[:nmax-1] = an[1:] # a(n+1) coefficient
     bnp1[:nmax-1] = bn[1:] # a(n+1) coefficient
     
-    asy1 = n*(n + 2)/(n + 1)*(an*conj(anp1)+ bn*conj(bnp1)) \
-         + (2*n + 1)/(n*(n + 1))*real(an*conj(bn))
+    asy1 = n*(n + 2)/(n + 1)*(an*_conj(anp1)+ bn*_conj(bnp1)) \
+         + (2*n + 1)/(n*(n + 1))*_real(an*_conj(bn))
     
-    asy2 = (2*n+1)*(an*conj(an) + bn*conj(bn))
-    Asym = real(2*_np.sum(asy1)/_np.sum(asy2))
+    asy2 = (2*n+1)*(an*_conj(an) + bn*_conj(bn))
+    Asym = _real(2*_np.sum(asy1)/_np.sum(asy2))
     
     #------------------------------------------------------------------
     # Backward scattering (not valid for absorbing host media)
     #------------------------------------------------------------------
     f = (2*n+1)*(-1)**n*(an - bn)
     q = _np.sum(f)
-    Qb = real(q*conj(q)/y**2)
+    Qb = _real(q*_conj(q)/y**2)
     
     #------------------------------------------------------------------
     # Forward scattering (not valid for absorbing host media)
     #------------------------------------------------------------------
     f = (2*n+1)*(an + bn)
     q = _np.sum(f)
-    Qf = real(q*conj(q)/y**2)
+    Qf = _real(q*_conj(q)/y**2)
     
     #------------------------------------------------------------------
     # Condition outputs to avoid unphysical results
@@ -422,7 +434,7 @@ def scatter_efficiency(wavelength: _Union[float, _np.ndarray],
 
     m = (Np / Nh.real).transpose()
     R = D_shells / 2.0
-    kh = 2 * pi * Nh.real / wavelength
+    kh = 2 * _pi * Nh.real / wavelength
     x = _np.outer(kh, R)
     
     # Preallocate outputs
@@ -486,7 +498,7 @@ def scatter_coefficients(wavelength: _Union[float, _np.ndarray],
 
     m = (Np / Nh.real).transpose()
     R = D_shells / 2.0
-    kh = 2 * pi * Nh.real / wavelength
+    kh = 2 * _pi * Nh.real / wavelength
     x = _np.outer(kh, R)
 
     # determine nmax 
@@ -522,19 +534,19 @@ def _pi_tau_1n(theta, nmax):
     """
     mu = _np.cos(theta)  # x = cos(θ)
 
-    pi  = _np.zeros((nmax, len(mu)))
+    _pi  = _np.zeros((nmax, len(mu)))
     tau = _np.zeros((nmax, len(mu)))
     
     pi_nm2 = 0
-    pi[0] = _np.ones_like(mu)
+    _pi[0] = _np.ones_like(mu)
     
     for n in range(1, nmax):
-        tau[n - 1] =            n * mu * pi[n - 1] - (n + 1) * pi_nm2
-        temp = pi[n - 1]
-        pi [n    ] = ((2 * n + 1) * mu * temp        - (n + 1) * pi_nm2) / n
+        tau[n - 1] =            n * mu * _pi[n - 1] - (n + 1) * pi_nm2
+        temp = _pi[n - 1]
+        _pi [n    ] = ((2 * n + 1) * mu * temp        - (n + 1) * pi_nm2) / n
         pi_nm2 = temp
         
-    return pi, tau
+    return _pi, tau
 
 @_hide_signature
 def scatter_amplitude(wavelength: _Union[float, _np.ndarray], 
@@ -550,7 +562,7 @@ def scatter_amplitude(wavelength: _Union[float, _np.ndarray],
     * For spheres S12 = S21 = 0
 
     The amplitude functions have been normalized so that when integrated
-    over all 4*pi solid angles, the integral will be qext*pi*x**2.
+    over all 4*_pi solid angles, the integral will be qext*_pi*x**2.
 
     Adapted from the miepython library: https://github.com/scottprahl/miepython
     Original Author: Scott Prahl
@@ -597,8 +609,8 @@ def scatter_amplitude(wavelength: _Union[float, _np.ndarray],
                                 check_inputs=False)
     nmax = an.shape[1]
 
-    # get pi and tau angular functions
-    pi, tau = _pi_tau_1n(theta, nmax)
+    # get _pi and tau angular functions
+    _pi, tau = _pi_tau_1n(theta, nmax)
 
     # set scale for summation
     n = _np.arange(1, nmax + 1)
@@ -610,8 +622,8 @@ def scatter_amplitude(wavelength: _Union[float, _np.ndarray],
     S1 = _np.zeros((len(mu), len(wavelength)), dtype=_np.complex128)
     S2 = _np.zeros((len(mu), len(wavelength)), dtype=_np.complex128)
     for k in range(len(mu)):
-        S1[k] = _np.dot(scale* pi[:,k],an.T) + _np.dot(scale*tau[:,k],bn.T)
-        S2[k] = _np.dot(scale*tau[:,k],an.T) + _np.dot(scale* pi[:,k],bn.T)
+        S1[k] = _np.dot(scale* _pi[:,k],an.T) + _np.dot(scale*tau[:,k],bn.T)
+        S2[k] = _np.dot(scale*tau[:,k],an.T) + _np.dot(scale* _pi[:,k],bn.T)
 
     return S1, S2
 
@@ -776,7 +788,7 @@ def phase_scatt_HG(wavelength: _Union[float, _np.ndarray],
             Default 1
         
         theta : ndarray or float (optional)
-            Scattering angle (radians). If None, then 0 to 2*pi in 1 degree steps.
+            Scattering angle (radians). If None, then 0 to 2*_pi in 1 degree steps.
             Default None
         
         as_ndarray : bool (optional)
@@ -1199,8 +1211,8 @@ def phase_scatt_ensemble(wavelength: _Union[float, _np.ndarray],
                 D_layers_mean.append(_np.average(D[i], axis=0,   # -> float
                                             weights=size_dist))  # size_dist shape (n_bins,)
                                         
-        Np_eff = emt_multilayer_sphere(D_layers_mean, Np, check_inputs=False)
-        Nh = emt_brugg(fv, Np_eff, Nh)
+        Np_eff = _emt_multilayer_sphere(D_layers_mean, Np, check_inputs=False)
+        Nh = _emt_brugg(fv, Np_eff, Nh)
 
     # Get form factor
     if size_dist is None:
@@ -1356,8 +1368,8 @@ def cross_section_ensemble(
                                             weights=size_dist))  # size_dist shape (n_bins,)
 
         # Compute effective refractive index of host using Bruggeman EMT                                   
-        Np_eff = emt_multilayer_sphere(D_layers_mean, Np, check_inputs=False)
-        Nh = emt_brugg(fv, Np_eff, Nh)
+        Np_eff = _emt_multilayer_sphere(D_layers_mean, Np, check_inputs=False)
+        Nh = _emt_brugg(fv, Np_eff, Nh)
 
     Ac = _np.pi*(D[-1]/2)**2                                  # cross-sectional area of each sphere
     n_bins = 1 if size_dist is None else len(size_dist)       # number of size bins

@@ -6,22 +6,18 @@ Created on Sun Nov  7 17:25:53 2021
 
 @author: PanxoPanza
 """
-import os
-import sys
-
-# empylib_folder = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
-# sys.path.insert(0,empylib_folder)
-
 import numpy as _np
-from . import miescattering as mie
-from . import waveoptics as wv
-from . import nklib as nk
+from . import miescattering as _mie
+from . import waveoptics as _wv
+from . import nklib as _nk
 import iadpython as _iad
-import pandas as pd
+import pandas as _pd
 from typing import Union as _Union, Optional as _Optional, List as _List, Tuple as _Tuple
 from .utils import _as_1d_array, _check_mie_inputs, _hide_signature
-from .nklib import emt_brugg, emt_multilayer_sphere
-from inspect import Signature, signature as _signature
+from .nklib import emt_brugg as _emt_brugg, emt_multilayer_sphere as _emt_multilayer_sphere
+from inspect import signature as _signature
+
+__all__ = ('T_beer_lambert', 'adm_sphere', 'adm')
 
 _IAD_SUPPORTS_TABULATED_PF = "pf_type" in _signature(_iad.Sample.__init__).parameters
 
@@ -106,7 +102,7 @@ def T_beer_lambert(wavelength: _Union[float, _np.ndarray],                      
         Whether to check mie inputs (default: True)    
 
     Returns
-    - results_df : pd.DataFrame with index=wavelength and columns:
+    - results_df : _pd.DataFrame with index=wavelength and columns:
                 'Rtot' : total reflectance
                 'Ttot' : total transmittance
                 'Tspec': specular (unscattered) transmittance
@@ -150,11 +146,11 @@ def T_beer_lambert(wavelength: _Union[float, _np.ndarray],                      
                                             weights=size_dist))  # size_dist shape (n_bins,)
 
         # Compute effective refractive index of host using Bruggeman EMT                                   
-        N_particle_eff = emt_multilayer_sphere(D_layers_mean, N_particle, check_inputs=False)
-        N_host = emt_brugg(fv, N_particle_eff, N_host)
+        N_particle_eff = _emt_multilayer_sphere(D_layers_mean, N_particle, check_inputs=False)
+        N_host = _emt_brugg(fv, N_particle_eff, N_host)
 
     # ---------- Mie cross sections and phase function ----------
-    cabs, csca, _, _ = mie.cross_section_ensemble(wavelength, N_host, N_particle, D, fv, 
+    cabs, csca, _, _ = _mie.cross_section_ensemble(wavelength, N_host, N_particle, D, fv, 
                                                   size_dist=size_dist,
                                                   check_inputs=False,
                                                   effective_medium=False,
@@ -177,7 +173,7 @@ def T_beer_lambert(wavelength: _Union[float, _np.ndarray],                      
     thickness = thickness*1E3 # convert mm to micron units
 
     theta_rad = aoi
-    Rp, Tp = wv.incoh_multilayer(
+    Rp, Tp = _wv.incoh_multilayer(
         wavelength,
         N_layers=[N_host],
         thickness=thickness,
@@ -186,7 +182,7 @@ def T_beer_lambert(wavelength: _Union[float, _np.ndarray],                      
         N_below=N_below,
         polarization='TM',
     )
-    Rs, Ts = wv.incoh_multilayer(
+    Rs, Ts = _wv.incoh_multilayer(
         wavelength,
         N_layers=[N_host],
         thickness=thickness,
@@ -198,14 +194,14 @@ def T_beer_lambert(wavelength: _Union[float, _np.ndarray],                      
     T    = (Ts + Tp)/2
     Rtot = (Rp + Rs)/2
     
-    theta1 = wv.snell(N_above, N_host, theta_rad)
+    theta1 = _wv.snell(N_above, N_host, theta_rad)
         
     Ttot = T*_np.exp(-k_abs*thickness/_np.cos(theta1.real))
     Tspec = T*_np.exp(-k_ext*thickness/_np.cos(theta1.real))
     Tdif = Ttot - Tspec
 
     # store data into a dataframe (λ index)
-    results_df = pd.DataFrame({
+    results_df = _pd.DataFrame({
         'Rtot': Rtot,
         'Ttot': Ttot,
         'Tspec': Tspec,
@@ -291,7 +287,7 @@ def adm_sphere(wavelength: _Union[float, _np.ndarray],                          
         Whether to compute Lambertian incidence instead of normal incidence
 
     Returns
-    - results_df : pd.DataFrame with index=wavelength and columns:
+    - results_df : _pd.DataFrame with index=wavelength and columns:
                 'Rtot' : total reflectance
                 'Ttot' : total transmittance
                 'Rspec': specular (unscattered) reflectance
@@ -337,12 +333,12 @@ def adm_sphere(wavelength: _Union[float, _np.ndarray],                          
                                             weights=size_dist))  # size_dist shape (n_bins,)
 
         # Compute effective refractive index of host using Bruggeman EMT                                   
-        N_particle_eff = emt_multilayer_sphere(D_layers_mean, N_particle, check_inputs=False)
-        N_host_eff = emt_brugg(fv, N_particle_eff, N_host)
+        N_particle_eff = _emt_multilayer_sphere(D_layers_mean, N_particle, check_inputs=False)
+        N_host_eff = _emt_brugg(fv, N_particle_eff, N_host)
     
     # ---------- Mie cross sections and phase function ----------
     theta_eval = _np.linspace(0, _np.pi, 100)
-    cabs, csca, gcos, phase_scatter = mie.cross_section_ensemble(wavelength, N_host_eff, N_particle, D, fv, 
+    cabs, csca, gcos, phase_scatter = _mie.cross_section_ensemble(wavelength, N_host_eff, N_particle, D, fv, 
                                                                 size_dist=size_dist,
                                                                 theta=theta_eval,
                                                                 check_inputs=False,
@@ -403,7 +399,7 @@ def adm(wavelength, thickness, k_sca, k_abs, N_host,
     Choose ONE angular description:
     - gcos     : (nλ,) asymmetry parameter  (Henyey–Greenstein style)
       OR
-    - phase_fun: pd.DataFrame of the differential *phase function* (not normalized to 1/4π),
+    - phase_fun: _pd.DataFrame of the differential *phase function* (not normalized to 1/4π),
                  shape (nθ, nλ). **Index must be θ in degrees from 0 to 180.**
                  Columns must be the wavelengths (same values as `wavelength`, order-agnostic).
                  The function will convert θ→μ=cosθ and sort μ ascending in [-1, 1].
@@ -414,7 +410,7 @@ def adm(wavelength, thickness, k_sca, k_abs, N_host,
                        diffuse cone incidence calculations
 
     Returns:
-    - results_df : pd.DataFrame with index=wavelength and columns:
+    - results_df : _pd.DataFrame with index=wavelength and columns:
                 'Rtot' : total reflectance
                 'Ttot' : total transmittance
                 'Rspec': specular (unscattered) reflectance
@@ -471,7 +467,7 @@ def adm(wavelength, thickness, k_sca, k_abs, N_host,
 
     # ---------- prepare phase function (TABULATED path) ----------
     if use_pf:
-        if not isinstance(phase_fun, pd.DataFrame):
+        if not isinstance(phase_fun, _pd.DataFrame):
             raise TypeError("phase_fun must be a pandas DataFrame with θ-degree index in [0,180].")
 
         # Validate θ index: must be degrees from 0 to 180
@@ -498,13 +494,13 @@ def adm(wavelength, thickness, k_sca, k_abs, N_host,
             PF = PF[order, :]
 
             # IAD expects a DataFrame with index μ in [-1,1], one column per λ
-            pf_df = pd.DataFrame(PF, index=mu, columns=wavelength)
+            pf_df = _pd.DataFrame(PF, index=mu, columns=wavelength)
             pf_df.index.name = "cos(theta)"
         else:
             # Older iadpython releases only expose Henyey-Greenstein anisotropy.
             # Collapse the supplied phase function to an equivalent g(λ) so the
             # public `phase_fun=` entrypoint remains usable in those environments.
-            _, gcos = mie.scatter_from_phase_function(phase_fun)
+            _, gcos = _mie.scatter_from_phase_function(phase_fun)
             use_pf = False
 
     # ---------- run IAD per wavelength ----------
@@ -581,7 +577,7 @@ def adm(wavelength, thickness, k_sca, k_abs, N_host,
     Tdif[(_np.abs(Tdif) < 1E-2) & (Tdif < 0)] = 0
 
     # Store data into a dataframe (λ index)
-    results_df = pd.DataFrame({
+    results_df = _pd.DataFrame({
         "Rtot": Rtot,
         "Ttot": Ttot,
         "Rspec": Rspec,
