@@ -921,8 +921,8 @@ def fit_to_oscillator(x, y_data,
     default_bounds = {
         'drude': {'epsinf': (0, 10), 'wp': (1E-5, 100), 'gamma': (1E-5, 10)},
         'lorentz': {'epsinf': (0, 10), 'wp': (1E-5, 100), 'wn': (1E-2, 10), 'gamma': (1E-5, 10)},
-        'tauc-lorentz': {'A': (0, 10), 'C': (0, 10), 'E0': (0, 10), 'Eg': (0, 10)},
-        'gaussian': {'A': (0, 10), 'Br': (0, 10), 'E0': (0, 10)}
+        'tauc-lorentz': {'A':  (1E-5, 100), 'C':  (1E-5, 100), 'E0': (0, 10), 'Eg': (0, 10)},
+        'gaussian': {'A':  (1E-5, 100), 'Br':  (1E-5, 100), 'E0': (0, 10)}
     }
 
     base_models = {
@@ -1400,7 +1400,12 @@ ZnO = lambda wavelength: get_ri_info(wavelength,'main','ZnO','Querry')[0]
 # refractive index of MgO
 MgO = lambda wavelength: get_nkfile(wavelength,'MgO_Palik', get_from_local_path = True)[0]
 
-# refractive index of Alumina (AL2O3)
+# refractive index of MgF2
+MgF2 = lambda wavelength: get_ri_info(wavelength,'main','MgF2','Franta')[0]
+
+# refractive index of ZrO2
+ZrO2 = lambda wavelength: get_ri_info(wavelength,'main','ZrO2','Synowicki')[0]
+
 Al2O3 = lambda wavelength: get_ri_info(wavelength,'main','Al2O3','Querry-o')[0]
 
 # refractive index of ZnS
