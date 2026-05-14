@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import matplotlib.pyplot as plt
+import pandas as pd
 import warnings
 
 from .bootstrap import ensure_repo_on_path
@@ -63,9 +64,12 @@ def fit_demo():
     initial_guess = {
         "lorentz_1": {"type": "lorentz", "epsinf": 1.2, "wp": 6.5, "wn": 2.7, "gamma": 0.30},
     }
+    y_data = pd.DataFrame({"n": target.real, "k": target.imag}, index=lam)
+    y_data.index.name = "wavelength"
+
     fitted_oscillator, result = nk.fit_to_oscillator(
         lam,
-        [target.real, target.imag],
+        y_data,
         initial_guess,
     )
 

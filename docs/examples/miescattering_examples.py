@@ -99,12 +99,12 @@ def ensemble_demo():
     )
     phase_ensemble = mie.phase_scatt_ensemble(
         lam,
+        theta,
         1.50,
         2.35 + 0.01j + 0 * lam,
         d_bins,
         fv=0.08,
         size_dist=size_dist,
-        theta=theta,
     )
     cabs, csca, g_av, phase_df = mie.cross_section_ensemble(
         lam,
@@ -113,7 +113,7 @@ def ensemble_demo():
         d_bins,
         fv=0.08,
         size_dist=size_dist,
-        theta=theta,
+        n_theta=theta.size,
         phase_function=True,
     )
 

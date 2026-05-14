@@ -9,11 +9,18 @@ Created on Sun Nov  7 17:25:53 2021
 import numpy as _np
 from . import miescattering as _mie
 from . import waveoptics as _wv
-from . import nklib as _nk
 import iadpython as _iad
 import pandas as _pd
 from typing import Union as _Union, Optional as _Optional, List as _List, Tuple as _Tuple
-from .utils import _as_1d_array, _check_mie_inputs, _hide_signature
+from .utils import (
+    _as_1d_array,
+    _check_mie_inputs,
+    _hide_signature,
+    _effective_host,
+    _estimate_theta_npts,
+    _make_angular_grid,
+    _prepare_tabulated_phase_fun_for_iad,
+)
 from .nklib import emt_brugg as _emt_brugg, emt_multilayer_sphere as _emt_multilayer_sphere
 from inspect import signature as _signature
 
@@ -132,22 +139,11 @@ def T_beer_lambert(wavelength: _Union[float, _np.ndarray],                      
             print("Warning: Dependent scattering theory not recommended for metallic particles.")
     
     # ---------- Effective medium for host (if your convention is to dress N_host) ----------
-    N_layers = len(D)                                    # number of layers in the sphere
     if effective_medium:
-        # Compute mean diameter of each layer
-        D_layers_mean = []
-        for i in range(N_layers):
-            if size_dist is None:
-                # Monodisperse
-                D_layers_mean.append(float(_np.asarray(D[i]).ravel()[0]))
-            else:
-                # Polydisperse
-                D_layers_mean.append(_np.average(D[i], axis=0,   # -> float
-                                            weights=size_dist))  # size_dist shape (n_bins,)
-
-        # Compute effective refractive index of host using Bruggeman EMT                                   
-        N_particle_eff = _emt_multilayer_sphere(D_layers_mean, N_particle, check_inputs=False)
-        N_host = _emt_brugg(fv, N_particle_eff, N_host)
+        Nh = _effective_host(fv, N_particle, N_host, D, size_dist,
+                            emt_multilayer_fn=_emt_multilayer_sphere,
+                            emt_brugg_fn=_emt_brugg,
+                            )
 
     # ---------- Mie cross sections and phase function ----------
     cabs, csca, _, _ = _mie.cross_section_ensemble(wavelength, N_host, N_particle, D, fv, 
@@ -226,6 +222,7 @@ def adm_sphere(wavelength: _Union[float, _np.ndarray],                          
                 dependent_scatt = False,                                            # use Perkus-Yevik for dependent scattering
                 effective_medium: bool = False,                                     # whether to compute effective N_host via Bruggeman
                 use_phase_fun: bool = False,                                        # whether to use phase function instead of g
+                n_theta: _Optional[int] = 101,                                          # auto|linspace|legendre angular sampling grid
                 cone_incidence: _Optional[_Tuple[float, float]] = None,             # (theta_min, theta_max) in degrees for diffuse cone incidence
                 lambertian: bool = False                                            # whether to compute Lambertian incidence instead of normal
                 ):
@@ -280,6 +277,10 @@ def adm_sphere(wavelength: _Union[float, _np.ndarray],                          
         If False, the asymmetry parameter g is used instead (Henyey-Greenstein approximation).
         Using the phase function is more accurate but also more computationally intensive.
 
+    n_theta : int, optional
+        Number of angular points used to sample the phase function and structure factor.
+        Default is 101.
+
     cone_incidence : tuple, optional
         Optional tuple (theta_min, theta_max) in degrees for diffuse cone incidence    
     
@@ -317,30 +318,17 @@ def adm_sphere(wavelength: _Union[float, _np.ndarray],                          
     #         print("Warning: Dependent scattering theory not recommended for metallic particles.")
 
     # ---------- Effective medium for host (if your convention is to dress N_host) ----------
-    N_layers = len(D)                                    # number of layers in the sphere
-    
     N_host_eff = N_host.copy()
     if effective_medium and fv > 0.0:
-        # Compute mean diameter of each layer
-        D_layers_mean = []
-        for i in range(N_layers):
-            if size_dist is None:
-                # Monodisperse
-                D_layers_mean.append(float(_np.asarray(D[i]).ravel()[0]))
-            else:
-                # Polydisperse
-                D_layers_mean.append(_np.average(D[i], axis=0,   # -> float
-                                            weights=size_dist))  # size_dist shape (n_bins,)
-
-        # Compute effective refractive index of host using Bruggeman EMT                                   
-        N_particle_eff = _emt_multilayer_sphere(D_layers_mean, N_particle, check_inputs=False)
-        N_host_eff = _emt_brugg(fv, N_particle_eff, N_host)
-    
-    # ---------- Mie cross sections and phase function ----------
-    theta_eval = _np.linspace(0, _np.pi, 100)
+        N_host_eff = _effective_host(fv, N_particle, N_host, D, size_dist,
+                                    emt_multilayer_fn=_emt_multilayer_sphere,
+                                    emt_brugg_fn=_emt_brugg,
+                                    )
+   
+   #  compute cross sections and phase function
     cabs, csca, gcos, phase_scatter = _mie.cross_section_ensemble(wavelength, N_host_eff, N_particle, D, fv, 
                                                                 size_dist=size_dist,
-                                                                theta=theta_eval,
+                                                                n_theta=n_theta,
                                                                 check_inputs=False,
                                                                 effective_medium=False,
                                                                 dependent_scatt=dependent_scatt,
@@ -468,34 +456,12 @@ def adm(wavelength, thickness, k_sca, k_abs, N_host,
     # ---------- prepare phase function (TABULATED path) ----------
     if use_pf:
         if not isinstance(phase_fun, _pd.DataFrame):
-            raise TypeError("phase_fun must be a pandas DataFrame with θ-degree index in [0,180].")
-
-        # Validate θ index: must be degrees from 0 to 180
-        theta_idx = _np.asarray(phase_fun.index, float)
-        if theta_idx.ndim != 1:
-            raise ValueError("phase_fun index must be 1D θ (degrees).")
-        if theta_idx.min() < 0.0 or theta_idx.max() > 180.0:
-            raise ValueError("phase_fun index (θ) must lie within [0°, 180°].")
-
-        # Align columns to wavelength (order-agnostic but values must match)
-        try:
-            # If columns are numeric wavelengths, reindex to wavelength exactly (no interpolation here)
-            PF = phase_fun.reindex(columns=wavelength, copy=False).values
-        except Exception as e:
-            raise ValueError("phase_fun columns must match wavelength.") from e
-        if PF.shape != (theta_idx.size, n_wavelengths):
-            raise ValueError("phase_fun must have shape (nθ, nλ) matching wavelength.")
+            raise TypeError("phase_fun must be a pandas DataFrame with theta-degree index in [0,180].")
 
         if _IAD_SUPPORTS_TABULATED_PF:
-            # Convert θ → μ and sort ascending in [-1, 1]
-            mu = _np.cos(_np.radians(theta_idx))
-            order = _np.argsort(mu)    # ascending
-            mu = mu[order]
-            PF = PF[order, :]
-
-            # IAD expects a DataFrame with index μ in [-1,1], one column per λ
-            pf_df = _pd.DataFrame(PF, index=mu, columns=wavelength)
-            pf_df.index.name = "cos(theta)"
+            # Shared conversion keeps theta->mu tabulation consistent across
+            # all future iadpython call-sites.
+            pf_df = _prepare_tabulated_phase_fun_for_iad(phase_fun, wavelength)
         else:
             # Older iadpython releases only expose Henyey-Greenstein anisotropy.
             # Collapse the supplied phase function to an equivalent g(λ) so the
@@ -518,26 +484,40 @@ def adm(wavelength, thickness, k_sca, k_abs, N_host,
         Tlam = _np.zeros(n_wavelengths, float)
 
     for j in range(n_wavelengths):
-        # guard: IAD wants n >= 1
-        n_real = float(max(N_host_arr.real[j], 1.0))
-        n_up   = float(max(N_above_arr.real[j], 1.0))
-        n_dw   = float(max(N_below_arr.real[j], 1.0))
+        n_transport = float(N_host_arr.real[j])
+        if n_transport <= 0.0:
+            raise ValueError("N_host real part must be strictly positive for radiative transport.")
 
         if mu_t[j] <= 0.0:
-            # transparent, non-scattering layer -> Fresnel only
-            s = _iad.Sample(a=0.0, b=0.0, g=0.0, d=d, n=n_real, n_above=n_up, n_below=n_dw)
+            a = 0.0
+            b = 0.0
         else:
-            a = mu_s[j] / mu_t[j]     # single-scattering albedo
-            b = mu_t[j] * d           # optical thickness
-            if not use_pf:
-                s = _iad.Sample(a=a, b=b, g=float(gcos[j]), d=d,
-                                n=n_real, n_above=n_up, n_below=n_dw)
-            else:
-                # tabulated phase function path
-                pf_col = pf_df.iloc[:, j].to_frame()
-                s = _iad.Sample(a=a, b=b, d=d, n=n_real, n_above=n_up, n_below=n_dw,
-                                quad_pts=int(quad_pts),
-                                pf_type="TABULATED", pf_data=pf_col)
+            a = float(mu_s[j] / mu_t[j])   # single-scattering albedo
+            b = float(mu_t[j] * d)         # optical thickness
+
+        sample_kwargs = dict(
+            a=a,
+            b=b,
+            d=d,
+            n=n_transport,
+            n_sample_boundary=complex(N_host_arr[j]),
+            n_above=1.0,
+            n_below=1.0,
+            n_outer_above=complex(N_above_arr[j]),
+            n_outer_below=complex(N_below_arr[j]),
+        )
+        if not use_pf:
+            sample_kwargs["g"] = float(_np.nan_to_num(gcos[j], nan=0.0))
+            s = _iad.Sample(**sample_kwargs)
+        else:
+            # tabulated phase function path
+            pf_col = pf_df.iloc[:, j].to_frame()
+            s = _iad.Sample(
+                **sample_kwargs,
+                quad_pts=int(quad_pts),
+                pf_type="TABULATED",
+                pf_data=pf_col,
+            )
 
         # total RT at normal and Lambertian (diffuse) incidence
         R, _, T, _ = s.rt_matrices()

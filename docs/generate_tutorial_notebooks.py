@@ -382,9 +382,9 @@ NOTEBOOK_SPECS["nklib_test.ipynb"] = {
             "problem": "Real materials often need more than one oscillator term. Here we build a synthetic target from a known oscillator dictionary, then recover the parameters with `fit_to_oscillator`.",
             "parameters": [
                 "`oscillator_dict`: nested dictionary whose keys are oscillator family names",
-                "`n_data` and `k_data`: measured or synthetic real and imaginary parts to fit",
+                "`y_data`: DataFrame indexed by `wavelength`, with `n` and `k` columns",
                 "`bounds`: optional parameter limits; omitted here to use the defaults",
-                "`x_units='um'`: declares the wavelength units used in the fit input",
+                "`wvl_units='um'`: declares the wavelength units used in the fit input",
             ],
             "outputs": [
                 "`target_nk`: synthetic target spectrum",
@@ -412,6 +412,9 @@ NOTEBOOK_SPECS["nklib_test.ipynb"] = {
                 warnings.simplefilter("ignore", IntegrationWarning)
                 target_nk = nk.multi_oscillator(lam_fit, target_oscillator)
 
+            y_data = pd.DataFrame({"n": target_nk.real, "k": target_nk.imag}, index=lam_fit)
+            y_data.index.name = "wavelength"
+
             initial_guess = {
                 "lorentz": {
                     "epsinf": 1.2,
@@ -430,15 +433,15 @@ NOTEBOOK_SPECS["nklib_test.ipynb"] = {
                 warnings.simplefilter("ignore", IntegrationWarning)
                 fitted_oscillator, result = nk.fit_to_oscillator(
                     lam_fit,
-                    [target_nk.real, target_nk.imag],  # [n_data, k_data]
+                    y_data,           # DataFrame indexed by wavelength
                     initial_guess,    # initial parameter dictionary
-                    x_units="um",     # wavelength unit used by lam_fit
+                    wvl_units="um",   # wavelength unit used by lam_fit
                 )
-                fitted_nk = nk.multi_oscillator(lam_fit, fitted_oscillator)
+                fitted_nk = nk.multi_oscillator(lam_fit, fitted_oscillator.model)
 
             print("Optimization succeeded:", result.success)
             print("Recovered oscillator dictionary:")
-            display(pd.Series({key: str(value) for key, value in fitted_oscillator.items()}))
+            display(pd.Series({key: str(value) for key, value in fitted_oscillator.model.items()}))
 
             fig, ax = plt.subplots()
             ax.plot(lam_fit, target_nk.real, label="Target n")
@@ -1247,12 +1250,12 @@ NOTEBOOK_SPECS["miescattering_test.ipynb"] = {
 
             phase_ensemble = mie.phase_scatt_ensemble(
                 lam,
+                theta,
                 1.50,
                 2.35 + 0.01j + 0 * lam,
                 d_bins,
                 fv=0.08,
                 size_dist=size_dist,
-                theta=theta,
             )
 
             cabs, csca, g_av, phase_df = mie.cross_section_ensemble(
@@ -1262,7 +1265,7 @@ NOTEBOOK_SPECS["miescattering_test.ipynb"] = {
                 d_bins,
                 fv=0.08,
                 size_dist=size_dist,
-                theta=theta,
+                n_theta=theta.size,
                 phase_function=True,  # also return the phase function DataFrame
             )
 

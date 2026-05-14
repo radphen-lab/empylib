@@ -1,5 +1,5 @@
 import numpy as _np
-from typing import Union as _Union, Optional as _Optional
+from typing import Union as _Union, Optional as _Optional, Callable as _Callable
 from inspect import Signature as _Signature
 from scipy.interpolate import CubicSpline as _CubicSpline
 from typing import Tuple as _Tuple, Dict as _Dict
@@ -608,6 +608,137 @@ def _check_theta(theta: _Optional[_Union[float, _np.ndarray]],
         theta = _np.asarray(theta, dtype=float).ravel()
 
     return theta
+
+def _theta_to_mu(theta_rad: _Union[float, _np.ndarray]) -> _np.ndarray:
+    """Convert scattering angle theta [rad] to mu=cos(theta)."""
+    return _np.cos(_np.asarray(theta_rad, dtype=float))
+
+def _mu_to_theta(mu: _Union[float, _np.ndarray]) -> _np.ndarray:
+    """Convert mu=cos(theta) to theta [rad], clipping for numeric safety."""
+    return _np.arccos(_np.clip(_np.asarray(mu, dtype=float), -1.0, 1.0))
+
+def _make_angular_grid(
+    n_nodes: int,
+    *,
+    grid_type: str = "auto",
+    prefer_legendre: bool = False,
+    include_endpoints: bool = False,
+) -> _np.ndarray:
+    """
+    Build a 1D theta grid [rad] for scattering calculations.
+
+    Parameters
+    ----------
+    n_nodes : int
+        Requested number of nodes.
+    grid_type : {'auto', 'linspace', 'legendre'}
+        Grid generator mode.
+    prefer_legendre : bool
+        Used when grid_type='auto'. If True, choose Legendre nodes.
+    include_endpoints : bool
+        If True, ensure 0 and pi are explicitly included.
+    """
+    n_eval = int(n_nodes)
+    if n_eval < 2:
+        raise ValueError("n_nodes must be >= 2.")
+
+    mode = str(grid_type).lower()
+    if mode == "auto":
+        mode = "legendre" if prefer_legendre else "linspace"
+
+    if mode == "trapz":
+        theta = _np.linspace(0.0, _np.pi, n_eval)
+    elif mode == "gauss":
+        mu_nodes, _ = _np.polynomial.legendre.leggauss(n_eval)
+        theta = _np.sort(_mu_to_theta(mu_nodes))
+    else:
+        raise ValueError("grid_type must be one of {'auto', 'linspace', 'legendre'}.")
+
+    if include_endpoints:
+        theta = _np.unique(_np.concatenate(([0.0, _np.pi], theta)))
+
+    return theta
+
+def _estimate_theta_npts(
+    wavelength: _np.ndarray,
+    N_host: _np.ndarray,
+    D_outer: _np.ndarray,
+    *,
+    bounds: _Tuple[int, int] = (32, 128),
+) -> int:
+    """Heuristic angular resolution from maximum size parameter."""
+    n_min, n_max = bounds
+    n_min = int(max(n_min, 8))
+    n_max = int(max(n_max, n_min))
+
+    wavelength = _np.asarray(wavelength, dtype=float)
+    N_host = _np.asarray(N_host, dtype=complex)
+    D_outer = _np.asarray(D_outer, dtype=float)
+
+    x_max = _np.max(_np.pi * _np.real(N_host) * _np.max(D_outer) / wavelength)
+    return int(_np.clip(24 + 8 * _np.sqrt(max(float(x_max), 1e-12)), n_min, n_max))
+
+def _prepare_tabulated_phase_fun_for_iad(
+    phase_fun: _pd.DataFrame,
+    wavelength: _np.ndarray,
+) -> _pd.DataFrame:
+    """
+    Convert theta-indexed phase-function DataFrame (degrees) into a mu-indexed
+    DataFrame sorted ascending in [-1, 1], as expected by iadpython TABULATED mode.
+    """
+    if not isinstance(phase_fun, _pd.DataFrame):
+        raise TypeError("phase_fun must be a pandas DataFrame with theta-degree index.")
+
+    theta_idx = _np.asarray(phase_fun.index, dtype=float)
+    if theta_idx.ndim != 1:
+        raise ValueError("phase_fun index must be 1D theta (degrees).")
+    if theta_idx.size < 2:
+        raise ValueError("phase_fun must contain at least two angular rows.")
+    if theta_idx.min() < 0.0 or theta_idx.max() > 180.0:
+        raise ValueError("phase_fun index (theta) must lie within [0°, 180°].")
+
+    try:
+        pf_values = phase_fun.reindex(columns=_np.asarray(wavelength, dtype=float), copy=False).values
+    except Exception as e:
+        raise ValueError("phase_fun columns must match wavelength.") from e
+
+    if pf_values.shape != (theta_idx.size, _np.asarray(wavelength).size):
+        raise ValueError("phase_fun must have shape (n_theta, n_lambda) matching wavelength.")
+
+    mu = _theta_to_mu(_np.radians(theta_idx))
+    order = _np.argsort(mu)
+    pf_mu = _pd.DataFrame(pf_values[order, :], index=mu[order], columns=_np.asarray(wavelength, dtype=float))
+    pf_mu.index.name = "cos(theta)"
+    return pf_mu
+
+def _effective_host(
+    fv: float,
+    N_particle,
+    N_host,
+    D,
+    size_dist,
+    *,
+    emt_multilayer_fn: _Callable,
+    emt_brugg_fn: _Callable,
+):
+    """
+    Apply multilayer-sphere + Bruggeman effective-medium update to host index.
+
+    This helper centralizes duplicated effective-medium logic used by Mie and RT paths.
+    """
+    if not (fv > 0):
+        return N_host
+
+    n_layers = len(D)
+    d_layers_mean = []
+    for i in range(n_layers):
+        if size_dist is None:
+            d_layers_mean.append(float(_np.asarray(D[i]).ravel()[0]))
+        else:
+            d_layers_mean.append(_np.average(D[i], axis=0, weights=size_dist))
+
+    N_particle_eff = emt_multilayer_fn(d_layers_mean, N_particle, check_inputs=False)
+    return emt_brugg_fn(fv, N_particle_eff, N_host)
 
 # decorator to hide function signature
 def _hide_signature(func):

@@ -377,9 +377,6 @@ def incoh_multilayer(
     wavelength : ndarray
         wavelength range (microns)
         
-    aoi : float, optional
-        angle of incidence (radian).
-        
     N_layers : float, ndarray, or list
         Refractive index of each finite layer. It can be:
         - a single float (single-layer, wavelength-independent),
@@ -391,6 +388,9 @@ def incoh_multilayer(
     thickness : list or float
         Thickness of each layer in microns. A single float is allowed for a
         single-layer case.
+
+    aoi : float, optional
+        angle of incidence (radian). Default is 0 (normal incidence).
 
     N_above : float or ndarray, optional
         Refractive index of the medium above the multilayer film.

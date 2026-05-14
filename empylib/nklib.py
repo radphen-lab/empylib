@@ -19,15 +19,31 @@ import yaml as _yaml
 import requests as _requests
 from io import StringIO as _StringIO
 import inspect as _inspect
+import re as _re
 
 __all__ = ('get_nkfile', 'get_ri_info', 
            'lorentz', 'drude', 'tauc_lorentz', 'gaussian', 'multi_oscillator', 'fit_to_oscillator',
+           'interactive_oscillator_guess',
            'emt_multilayer_sphere', 'emt_brugg', 'eps_real_kkr',
            'SiO2', 'Silica', 'CaCO3', 'BaSO4', 'BaF2', 'TiO2',
            'BiVO4_mono_a', 'BiVO4_mono_b', 'BiVO4_mono_c', 'BiVO4', 'Cu2O', 'ZnO',
             'MgO', 'Al2O3', 'ZnS', 'GSTa', 'GSTc', 'VO2M', 'VO2R', 'VO2',
             'Si', 'gold', 'silver', 'Cu', 'Al', 'Mg',
             'HDPE', 'PDMS', 'PMMA', 'PVDF', 'H2O')
+
+_OSCILLATOR_BASE_MODELS = {
+    'tauc-lorentz': 'tauc_lorentz',
+    'gaussian': 'gaussian',
+    'lorentz': 'lorentz',
+    'drude': 'drude',
+}
+
+_OSCILLATOR_DEFAULT_BOUNDS = {
+    'drude': {'epsinf': (0, 10), 'wp': (1E-5, 10), 'gamma': (1E-5, 10)},
+    'lorentz': {'epsinf': (0, 10), 'wp': (1E-5, 10), 'wn': (1E-2, 10), 'gamma': (1E-5, 10)},
+    'tauc-lorentz': {'A':  (1E-5, 100), 'C':  (1E-5, 10), 'E0': (0, 10), 'Eg': (0, 10)},
+    'gaussian': {'A':  (1E-5, 100), 'Br':  (1E-5, 100), 'E0': (0, 10)}
+}
 
 def blend_model(wavelength, nk_df, nk_model, blend_low=None, blend_high=None):
     '''
@@ -599,6 +615,258 @@ def _merge_bounds_with_defaults(model_name, user_bounds, default_bounds):
     return merged
 
 
+def _get_oscillator_base_models():
+    return {
+        model_type: globals()[func_name]
+        for model_type, func_name in _OSCILLATOR_BASE_MODELS.items()
+    }
+
+
+def _normalize_oscillator_input(oscillator):
+    if isinstance(oscillator, dict):
+        return {
+            model_name: dict(model_dict)
+            for model_name, model_dict in oscillator.items()
+        }
+
+    if isinstance(oscillator, (list, tuple)):
+        normalized = {}
+        counts = {}
+        for idx, model_dict in enumerate(oscillator):
+            if not isinstance(model_dict, dict):
+                raise TypeError(
+                    f"oscillator[{idx}] must be a dict with a 'type' key"
+                )
+            if 'type' not in model_dict:
+                raise ValueError(
+                    f"oscillator[{idx}] is missing required 'type' key"
+                )
+            model_type = str(model_dict['type']).lower()
+            counts[model_type] = counts.get(model_type, 0) + 1
+            normalized[f"{model_type}_{counts[model_type]}"] = dict(model_dict)
+        return normalized
+
+    raise TypeError("oscillator must be a dict or a list of model dicts")
+
+
+def _build_oscillator_metadata(oscillator, *, bounds=None, fixed_params=None):
+    '''
+    Normalize oscillator specs and map free parameters into one optimizer vector.
+
+    Each model entry stores the original parameter order, fixed values, bounds,
+    and vector locations needed by fitting and interactive sliders.
+    '''
+    oscillator_dict = _normalize_oscillator_input(oscillator)
+    if bounds is not None and not isinstance(bounds, dict):
+        raise TypeError("bounds must be a dictionary or None")
+
+    base_models = _get_oscillator_base_models()
+    fixed_params_dict = _normalize_fixed_params(fixed_params)
+    model_entries = []
+    p0 = []
+    lb = []
+    ub = []
+
+    for model_name, model_dict in oscillator_dict.items():
+        if 'type' not in model_dict:
+            raise ValueError(
+                f"Model '{model_name}' is missing required 'type' key. "
+                "Each model must define one of: drude, lorentz, tauc-lorentz, gaussian."
+            )
+
+        model_type = str(model_dict['type']).lower()
+        if model_type not in base_models:
+            raise ValueError(
+                f"Model '{model_name}': type '{model_type}' is not recognized. "
+                f"Valid types are: {list(base_models.keys())}"
+            )
+
+        func = base_models[model_type]
+        sig = _inspect.signature(func)
+        required_params = list(sig.parameters.keys())[1:]
+        model_params = {k: v for k, v in model_dict.items() if k != 'type'}
+
+        missing_params = set(required_params) - set(model_params.keys())
+        extra_params = set(model_params.keys()) - set(required_params)
+        if missing_params or extra_params:
+            raise ValueError(
+                f"Model '{model_name}' (type: {model_type}) requires parameters: "
+                f"{required_params}, but got: {list(model_params.keys())}"
+            )
+
+        user_bounds_for_model = bounds.get(model_name) if bounds else None
+        model_bounds = _merge_bounds_with_defaults(
+            model_name,
+            user_bounds_for_model,
+            _OSCILLATOR_DEFAULT_BOUNDS[model_type]
+        )
+
+        param_values = _np.array(
+            [float(model_params[param_name]) for param_name in required_params],
+            dtype=float
+        )
+        model_fixed = fixed_params_dict.get(model_name, set())
+        free_param_locs = []
+        free_vector_locs = []
+        for param_idx, param_name in enumerate(required_params):
+            if param_name in model_fixed:
+                continue
+            vector_idx = len(p0)
+            param_value = float(model_params[param_name])
+            lower, upper = model_bounds[param_name]
+            p0.append(param_value)
+            lb.append(float(lower))
+            ub.append(float(upper))
+            free_param_locs.append(param_idx)
+            free_vector_locs.append(vector_idx)
+
+        model_entries.append({
+            'name': model_name,
+            'type': model_dict['type'],
+            'func': func,
+            'required_params': tuple(required_params),
+            'base_values': param_values,
+            'free_param_locs': _np.asarray(free_param_locs, dtype=int),
+            'free_vector_locs': _np.asarray(free_vector_locs, dtype=int),
+            'bounds': model_bounds,
+        })
+
+    return {
+        'oscillator_dict': oscillator_dict,
+        'fixed_params_dict': fixed_params_dict,
+        'model_entries': model_entries,
+        'p0': _np.asarray(p0, dtype=float),
+        'lower_bounds': _np.asarray(lb, dtype=float),
+        'upper_bounds': _np.asarray(ub, dtype=float),
+    }
+
+
+def _construct_oscillator_dict_from_entries(model_entries, p):
+    out = {}
+    for entry in model_entries:
+        values = entry['base_values'].copy()
+        if entry['free_vector_locs'].size > 0:
+            values[entry['free_param_locs']] = p[entry['free_vector_locs']]
+        out[entry['name']] = {'type': entry['type']}
+        for param_name, value in zip(entry['required_params'], values):
+            out[entry['name']][param_name] = float(value)
+    return out
+
+
+def _evaluate_nk_from_entries(lam, model_entries, p):
+    eps = complex(0, 0)
+    for entry in model_entries:
+        values = entry['base_values']
+        if entry['free_vector_locs'].size > 0:
+            values = values.copy()
+            values[entry['free_param_locs']] = p[entry['free_vector_locs']]
+        eps += entry['func'](lam, *values) ** 2
+    return _np.sqrt(eps)
+
+
+def _as_interactive_model_block(arr, name, lam):
+    '''Validate a custom interactive model block against the plotted wavelength grid.'''
+    if hasattr(arr, 'index'):
+        try:
+            index_values = _np.asarray(arr.index, dtype=float)
+        except Exception:
+            index_values = None
+        if index_values is not None and len(index_values) == len(lam):
+            if not _np.allclose(index_values, lam, rtol=1e-12, atol=1e-12):
+                raise ValueError(
+                    f"{name} has a pandas index that does not match wavelength. "
+                    "interactive_oscillator_guess plots model outputs against the "
+                    "wavelength argument, so y_eval must return numpy arrays or "
+                    "pandas Series indexed by wavelength."
+                )
+
+    out = _as_1d_real(arr, name)
+    if len(out) != len(lam):
+        raise ValueError(
+            f"{name} has length {len(out)} but wavelength has length {len(lam)}"
+        )
+    return out
+
+
+def _evaluate_model_blocks(context, p, *, extra_kwargs=None, interactive=False,
+                           require_target_lengths=True, y_eval_min_extra_args=0):
+    '''
+    Evaluate oscillator output and return blocks aligned with prepared targets.
+
+    Direct mode compares nk.real/nk.imag to parsed n/k columns. Custom mode calls
+    y_eval once and validates that its one-or-many outputs match y_data blocks.
+    '''
+    lam = context['lam']
+    data_blocks = context['data_blocks']
+    nk = _evaluate_nk_from_entries(lam, context['model_entries'], p)
+
+    if context['legacy_mode']:
+        model_blocks = [
+            _as_1d_real(nk.real if kind == 'n' else nk.imag, f'model_{kind}')
+            for kind in context['direct_kinds']
+        ]
+    else:
+        try:
+            model_out = context['y_eval'](
+                lam,
+                nk,
+                *context['eval_args'],
+                **({} if extra_kwargs is None else extra_kwargs),
+            )
+        except TypeError as exc:
+            if y_eval_min_extra_args > 0:
+                raise RuntimeError(
+                    "y_eval failed due to argument mismatch; verify args matches "
+                    "y_eval(lam, nk, *args)"
+                ) from exc
+            raise RuntimeError(f"y_eval failed: {exc}") from exc
+        except Exception as exc:
+            raise RuntimeError(f"y_eval failed: {exc}") from exc
+
+        model_out_blocks = list(model_out) if isinstance(model_out, (list, tuple)) else [model_out]
+        if len(model_out_blocks) != len(data_blocks):
+            raise ValueError(
+                f"y_eval returned {len(model_out_blocks)} outputs but y_data has "
+                f"{len(data_blocks)} target blocks"
+            )
+        if interactive:
+            model_blocks = [
+                _as_interactive_model_block(model_out_blocks[i], f'model_output[{i}]', lam)
+                for i in range(len(model_out_blocks))
+            ]
+        else:
+            model_blocks = [
+                _as_1d_real(model_out_blocks[i], f'model_output[{i}]')
+                for i in range(len(model_out_blocks))
+            ]
+
+    if len(model_blocks) != len(data_blocks):
+        raise ValueError("Model/data block count mismatch")
+
+    same_lengths = all(len(model_i) == len(data_i) for model_i, data_i in zip(model_blocks, data_blocks))
+    if require_target_lengths and not same_lengths:
+        for i, (model_i, data_i) in enumerate(zip(model_blocks, data_blocks)):
+            if len(model_i) != len(data_i):
+                raise ValueError(
+                    f"Target length mismatch at index {i}: "
+                    f"model has {len(model_i)} points, data has {len(data_i)} points"
+                )
+
+    mse = (
+        float(_np.mean(_np.concatenate([
+            (model_i - data_i) ** 2 for model_i, data_i in zip(model_blocks, data_blocks)
+        ])))
+        if same_lengths else _np.nan
+    )
+    return {
+        'nk': nk,
+        'data_blocks': data_blocks,
+        'model_blocks': model_blocks,
+        'labels': context['target_labels'],
+        'mse': mse,
+    }
+
+
 def multi_oscillator(wavelength, oscilator_dict):
     '''
     Computes refractive index using a combination of oscillator models.
@@ -748,7 +1016,608 @@ def _build_weight_block(weight_item, target_len, idx):
         )
     return w_block
 
-def fit_to_oscillator(x, y_data,
+
+def _parse_direct_nk_columns(y_data):
+    '''
+    Parse direct-mode y_data columns into paired n/k target descriptors.
+
+    Columns may be plain n/k or sample-tagged forms such as n_sample1 and
+    k (sample1). The output order is n, k for each discovered sample.
+    '''
+    if not isinstance(y_data, _pd.DataFrame):
+        raise TypeError("y_data must be a pandas DataFrame")
+
+    samples = []
+    by_sample = {}
+    for col in y_data.columns:
+        col_label = str(col)
+        stripped = col_label.strip()
+        if not stripped:
+            raise ValueError("Direct-mode y_data columns must start with n or k")
+
+        kind = stripped[0].lower()
+        if kind not in ('n', 'k'):
+            raise ValueError(
+                "Direct-mode y_data columns must start with n or k "
+                f"(got {col_label!r})"
+            )
+
+        if len(stripped) > 1 and stripped[1] not in (' ', '_', '-', '('):
+            raise ValueError(
+                "Direct-mode y_data columns must use n/k as a lead name followed "
+                f"by a separator (got {col_label!r})"
+            )
+
+        sample = stripped[1:].strip()
+        if sample.startswith('(') and sample.endswith(')') and len(sample) >= 2:
+            sample = sample[1:-1]
+        sample = _re.sub(r'^[\s_\-\(]+|[\s_\-\)]+$', '', sample).strip()
+
+        if sample not in by_sample:
+            by_sample[sample] = {'sample': sample}
+            samples.append(by_sample[sample])
+
+        sample_info = by_sample[sample]
+        if kind in sample_info:
+            sample_name = sample if sample else "legacy n/k"
+            raise ValueError(
+                f"Duplicate direct-mode {kind} column for sample {sample_name!r}"
+            )
+        sample_info[kind] = col
+
+    if not samples:
+        raise ValueError("y_data must have at least one n/k sample pair")
+
+    missing = []
+    for sample_info in samples:
+        for kind in ('n', 'k'):
+            if kind not in sample_info:
+                sample = sample_info['sample'] if sample_info['sample'] else "legacy n/k"
+                missing.append(f"{kind} for {sample!r}")
+    if missing:
+        raise ValueError(
+            "Direct-mode y_data requires each sample to have both n and k columns; "
+            f"missing {missing}"
+        )
+
+    targets = []
+    for sample_info in samples:
+        targets.append({
+            'sample': sample_info['sample'],
+            'kind': 'n',
+            'column': sample_info['n'],
+            'label': str(sample_info['n']),
+        })
+        targets.append({
+            'sample': sample_info['sample'],
+            'kind': 'k',
+            'column': sample_info['k'],
+            'label': str(sample_info['k']),
+        })
+
+    return samples, targets
+
+
+def _validate_train_data(wavelength, y_data, target_columns, wvl_units):
+    '''
+    Validate wavelength and tabular targets shared by fitting and guessing.
+
+    Wavelength is converted to microns, while y_data index values are assumed
+    to already be in microns. The requested wavelength grid must stay inside
+    the measured index range so neither workflow extrapolates target data.
+
+    Parameters
+    ----------
+        wavelength : numpy.ndarray
+            Wavelength range for fitting
+        y_data : pandas.DataFrame
+            Training data.
+        target_columns : list of str
+            Columns in y_data to use for training.
+        wvl_units : str
+            Units of the wavelength values.
+    Returns
+    -------
+        lam : numpy.ndarray
+            Wavelength values in micrometers.
+        y_data : pandas.DataFrame
+            Training data with appropriate index.
+        index_values : numpy.ndarray
+            Index values of the training data.
+    '''
+    if type(wavelength) is not _np.ndarray:
+        raise TypeError("wavelength must be a 1D numpy.ndarray")
+    if wavelength.ndim != 1:
+        raise ValueError("wavelength must be a 1D numpy.ndarray")
+    if wavelength.size == 0:
+        raise ValueError("wavelength must not be empty")
+
+    try:
+        lam = _convert_units(wavelength, wvl_units, to='um')
+        lam = _np.asarray(lam, float)
+    except Exception as exc:
+        raise ValueError("wavelength must contain numeric values") from exc
+
+    if lam.ndim != 1:
+        raise ValueError("wavelength must be a 1D numpy.ndarray")
+    if not _np.all(_np.isfinite(lam)):
+        raise ValueError("wavelength must contain only finite values")
+
+    if not isinstance(y_data, _pd.DataFrame):
+        raise TypeError("y_data must be a pandas DataFrame")
+    if y_data.index.name != 'wavelength':
+        raise ValueError("y_data index name must be 'wavelength'")
+    if y_data.empty:
+        raise ValueError("y_data must not be empty")
+    if not _pd.api.types.is_numeric_dtype(y_data.index):
+        raise TypeError("y_data index must be numeric")
+    if not y_data.index.is_unique:
+        raise ValueError("y_data index must be unique")
+
+    missing_columns = [col for col in target_columns if col not in y_data.columns]
+    if missing_columns:
+        raise ValueError(f"y_data is missing required column(s): {missing_columns}")
+
+    index_values = _np.asarray(y_data.index, float)
+    if index_values.size == 0:
+        raise ValueError("y_data index must not be empty")
+    if not _np.all(_np.isfinite(index_values)):
+        raise ValueError("y_data index must contain only finite values")
+
+    if lam.min() < index_values.min() or lam.max() > index_values.max():
+        raise ValueError(
+            "wavelength range must be within y_data index range; extrapolation is not allowed"
+        )
+
+    return lam, y_data, index_values
+
+
+def _prepare_fit_wavelength_and_targets(wavelength, y_data, target_columns, wvl_units):
+    '''Return fit wavelength and target blocks, interpolating y_data when needed.'''
+    lam, y_data, index_values = _validate_train_data(
+        wavelength,
+        y_data,
+        target_columns,
+        wvl_units,
+    )
+
+    exact_grid_match = len(lam) == len(index_values) and _np.array_equal(lam, index_values)
+    if not exact_grid_match and not y_data.index.is_monotonic_increasing:
+        y_data = y_data.sort_index()
+        index_values = _np.asarray(y_data.index, float)
+
+    y_data_blocks = []
+    for col in target_columns:
+        source = _as_1d_real(y_data[col].to_numpy(), f"y_data['{col}']")
+        if exact_grid_match:
+            y_data_blocks.append(source)
+        else:
+            y_data_blocks.append(_np.interp(lam, index_values, source))
+
+    return lam, y_data_blocks
+
+
+def _prepare_interactive_wavelength_and_targets(wavelength, y_data, target_columns, wvl_units):
+    '''Return model wavelength plus raw measured-grid targets for interactive plots.'''
+    lam, y_data, index_values = _validate_train_data(
+        wavelength, 
+        y_data, 
+        target_columns, 
+        wvl_units
+        )
+
+    data_blocks = [
+        _as_1d_real(y_data[col].to_numpy(), f"y_data['{col}']")
+        for col in target_columns
+    ]
+    
+    return lam, index_values, data_blocks
+
+
+def _prepare_oscillator_fit_context(wavelength, y_data, oscillator_dict, y_eval, args,
+                                    wvl_units, bounds, fixed_params, *, mode):
+    '''
+    Build the shared oscillator/data context for fitting and interactive guessing.
+
+    The context contains parsed target metadata, prepared data blocks, normalized
+    oscillator metadata, and the evaluator arguments needed by both workflows.
+    '''
+    if not isinstance(args, tuple):
+        raise TypeError("args must be a tuple")
+    if mode not in ('fit', 'interactive'):
+        raise ValueError("mode must be 'fit' or 'interactive'")
+
+    legacy_mode = y_eval is None
+    if legacy_mode:
+        if len(args) > 0:
+            raise ValueError("args can only be used when y_eval is provided")
+        direct_samples, direct_targets = _parse_direct_nk_columns(y_data)
+        target_columns = [target['column'] for target in direct_targets]
+        target_labels = [target['label'] for target in direct_targets]
+        direct_kinds = [target['kind'] for target in direct_targets]
+    else:
+        if not callable(y_eval):
+            raise TypeError("y_eval must be callable")
+        if not isinstance(y_data, _pd.DataFrame):
+            raise TypeError("y_data must be a pandas DataFrame")
+        direct_samples = None
+        direct_targets = None
+        direct_kinds = None
+        target_columns = list(y_data.columns)
+        if len(target_columns) == 0:
+            raise ValueError("y_data must have at least one column when y_eval is provided")
+        target_labels = [str(col) for col in target_columns]
+
+    if mode == 'fit':
+        lam, data_blocks = _prepare_fit_wavelength_and_targets(
+            wavelength,
+            y_data,
+            target_columns,
+            wvl_units,
+        )
+        data_x = lam
+    else:
+        lam, data_x, data_blocks = _prepare_interactive_wavelength_and_targets(
+            wavelength,
+            y_data,
+            target_columns,
+            wvl_units,
+        )
+
+    metadata = _build_oscillator_metadata(
+        oscillator_dict,
+        bounds=bounds,
+        fixed_params=fixed_params,
+    )
+
+    return {
+        'legacy_mode': legacy_mode,
+        'y_eval': y_eval,
+        'eval_args': args,
+        'lam': lam,
+        'data_x': data_x,
+        'data_blocks': data_blocks,
+        'target_columns': target_columns,
+        'target_labels': target_labels,
+        'direct_samples': direct_samples,
+        'direct_targets': direct_targets,
+        'direct_kinds': direct_kinds,
+        'metadata': metadata,
+        'model_entries': metadata['model_entries'],
+        'p0': metadata['p0'],
+        'lower_bounds': metadata['lower_bounds'],
+        'upper_bounds': metadata['upper_bounds'],
+    }
+
+
+class _InteractiveAxesProxy:
+    _REFRESHING_PREFIXES = ('set_', 'invert_')
+    _REFRESHING_METHODS = {
+        'autoscale',
+        'autoscale_view',
+        'clear',
+        'cla',
+        'grid',
+        'legend',
+        'margins',
+        'relim',
+    }
+
+    def __init__(self, axis, refresh):
+        self._axis = axis
+        self._refresh = refresh
+
+    def __getattr__(self, name):
+        attr = getattr(self._axis, name)
+        if not callable(attr):
+            return attr
+
+        def _wrapped(*args, **kwargs):
+            out = attr(*args, **kwargs)
+            if name.startswith(self._REFRESHING_PREFIXES) or name in self._REFRESHING_METHODS:
+                self._refresh()
+            return out
+
+        return _wrapped
+
+    def __eq__(self, other):
+        return self._axis is other or self._axis == other
+
+
+class _InteractiveOscillatorController:
+    def __init__(self, widget, output, sliders, model_entries, initial_p, fig, ax, pyplot, display_func=None):
+        self.widget = widget
+        self.output = output
+        self.fig = fig
+        self.mpl_ax = tuple(ax)
+        self.ax = tuple(_InteractiveAxesProxy(axis, self.refresh) for axis in self.mpl_ax)
+        self._pyplot = pyplot
+        self._display_func = display_func
+        self._sliders = sliders
+        self._model_entries = model_entries
+        self._initial_p = _np.asarray(initial_p, dtype=float)
+
+    def _current_param_vector(self):
+        p = self._initial_p.copy()
+        for slider_info in self._sliders:
+            p[slider_info['vector_idx']] = float(slider_info['slider'].value)
+        return p
+
+    @property
+    def model(self):
+        return self.get_model()
+
+    def get_model(self):
+        return _construct_oscillator_dict_from_entries(
+            self._model_entries,
+            self._current_param_vector()
+        )
+
+    def refresh(self):
+        canvas = getattr(self.fig, 'canvas', None)
+        if canvas is not None and hasattr(canvas, 'draw_idle'):
+            canvas.draw_idle()
+        if self.output is None:
+            if self._display_func is not None:
+                self._display_func(self.fig)
+            else:
+                self._pyplot.show()
+            return
+        if hasattr(self.output, 'clear_output'):
+            self.output.clear_output(wait=True)
+        with self.output:
+            if self._display_func is not None:
+                self._display_func(self.fig)
+            else:
+                self._pyplot.show()
+
+    def close(self):
+        for slider_info in self._sliders:
+            slider = slider_info['slider']
+            observer = slider_info.get('observer')
+            if observer is not None and hasattr(slider, 'unobserve'):
+                slider.unobserve(observer, names='value')
+            slider.close()
+        if self.output is not None and hasattr(self.output, 'close'):
+            self.output.close()
+        if self.fig is not None:
+            self._pyplot.close(self.fig)
+
+
+def interactive_oscillator_guess(wavelength, y_data, oscillator_dict, y_eval=None, args=(),
+                                 wvl_units='um', bounds=None, fixed_params=None,
+                                 figure_kwargs=None):
+    '''
+    Build an interactive notebook UI to manually tune oscillator parameters.
+
+    Parameters
+    ----------
+    wavelength : numpy.ndarray
+        1D wavelength array. Values are converted to microns using wvl_units.
+    y_data : pandas.DataFrame
+        Measured target data indexed by wavelength. The index name must be
+        'wavelength', and index values are assumed to already be in microns.
+        Measured data is plotted exactly on this index and is not interpolated.
+        Wavelength controls only the oscillator/model evaluation grid and must
+        lie within the y_data index range.
+        - If y_eval is None: y_data must have one or more paired n/k column
+          groups, such as 'n'/'k' or 'n (sample1)'/'k (sample1)'.
+        - If y_eval is provided: all DataFrame columns are used in column order,
+          with one column per output returned by y_eval.
+    oscillator_dict : dict or list of dict
+        Initial oscillator guess. A dict must match the multi_oscillator format.
+        A list must contain typed model dicts and will be auto-named.
+    y_eval : callable, optional
+        Forward model called as y_eval(lam_um, nk, *args). If None, direct
+        comparison to paired n/k columns is used.
+    args : tuple, optional
+        Extra positional arguments passed to y_eval.
+    wvl_units : str, optional
+        Units of wavelength (default 'um').
+    bounds : dict, optional
+        Partial bounds for slider ranges using the same shape as fit_to_oscillator bounds.
+    fixed_params : dict, list, or None, optional
+        Parameters to keep fixed; fixed parameters do not get sliders.
+    figure_kwargs : dict, optional
+        Extra keyword arguments forwarded to matplotlib.pyplot.subplots.
+
+    Returns
+    -------
+    _InteractiveOscillatorController
+        Controller exposing `.widget`, `.fig`, `.ax`, `.model`, `.get_model()`, and `.close()`.
+    '''
+    # Import dependencies here so that the main library does not require ipywidgets or matplotlib.
+    try:
+        from ipywidgets import HBox as _HBox, Label as _Label, VBox as _VBox, FloatSlider as _FloatSlider, Output as _Output
+    except ImportError as exc:
+        raise ImportError(
+            "interactive_oscillator_guess requires ipywidgets. Install it with `pip install ipywidgets`."
+        ) from exc
+
+    try:
+        import matplotlib.pyplot as _plt
+    except ImportError as exc:
+        raise ImportError(
+            "interactive_oscillator_guess requires matplotlib. Install it with `pip install matplotlib`."
+        ) from exc
+
+    try:
+        from IPython import get_ipython as _get_ipython
+        from IPython.display import display as _display
+        if _get_ipython() is None:
+            _display = None
+    except ImportError:
+        _display = None
+
+    figure_kwargs = {} if figure_kwargs is None else dict(figure_kwargs)
+    context = _prepare_oscillator_fit_context(
+        wavelength,
+        y_data,
+        oscillator_dict,
+        y_eval,
+        args,
+        wvl_units,
+        bounds,
+        fixed_params,
+        mode='interactive',
+    )
+    lam = context['lam']
+    data_x = context['data_x']
+    data_blocks = context['data_blocks']
+    direct_samples = context['direct_samples']
+    direct_targets = context['direct_targets']
+    model_entries = context['model_entries']
+    p0 = context['p0']
+
+    _evaluate_model_blocks(context, p0, interactive=True, require_target_lengths=False)
+
+    slider_infos = []
+    sliders_by_model = {}
+
+    for entry in model_entries:
+        model_sliders = []
+        for param_idx, vector_idx in zip(entry['free_param_locs'], entry['free_vector_locs']):
+            param_name = entry['required_params'][param_idx]
+            lower, upper = entry['bounds'][param_name]
+            step = max((float(upper) - float(lower)) / 200.0, 1e-6)
+            slider_key = f"{entry['name']}:{param_name}"
+            slider = _FloatSlider(
+                value=float(entry['base_values'][param_idx]),
+                min=float(lower),
+                max=float(upper),
+                step=step,
+                description=f"{param_name}:",
+                continuous_update=True,
+            )
+            slider_infos.append({
+                'name': slider_key,
+                'vector_idx': int(vector_idx),
+                'slider': slider,
+            })
+            model_sliders.append(slider)
+        sliders_by_model[entry['name']] = model_sliders
+
+    def _current_p_from_sliders():
+        p = p0.copy()
+        for slider_info in slider_infos:
+            p[slider_info['vector_idx']] = float(slider_info['slider'].value)
+        return p
+
+    fig, axes = _plt.subplots(1, 2, squeeze=False, **figure_kwargs)
+    data_ax, nk_ax = axes.ravel()
+    evaluated = _evaluate_model_blocks(context, p0, interactive=True, require_target_lengths=False)
+    model_lines = []
+    data_xlim = (float(data_x.min()), float(data_x.max()))
+    if y_eval is None:
+        k_ax, n_ax = data_ax, nk_ax
+        target_index = {
+            (target['sample'], target['kind']): i
+            for i, target in enumerate(direct_targets)
+        }
+        for sample_info in direct_samples:
+            sample = sample_info['sample']
+            n_idx = target_index[(sample, 'n')]
+            k_idx = target_index[(sample, 'k')]
+            k_line_data = k_ax.plot(
+                data_x,
+                evaluated['data_blocks'][k_idx],
+                '-',
+                label=evaluated['labels'][k_idx],
+            )[0]
+            data_color = k_line_data.get_color()
+            n_ax.plot(
+                data_x,
+                evaluated['data_blocks'][n_idx],
+                '-',
+                color=data_color,
+                label=evaluated['labels'][n_idx],
+            )
+        k_line = k_ax.plot(lam, evaluated['nk'].imag, '--k', label='k (fit)')[0]
+        n_line = n_ax.plot(lam, evaluated['nk'].real, '--k', label='n (fit)')[0]
+        k_ax.set_ylabel('k')
+        k_ax.set_xlabel('wavelength (um)')
+        k_ax.set_xlim(*data_xlim)
+        k_ax.set_yscale('log')
+        k_ax.legend()
+        n_ax.set_ylabel('n')
+        n_ax.set_xlabel('wavelength (um)')
+        n_ax.set_xlim(*data_xlim)
+        n_ax.legend()
+    else:
+        for i in range(len(evaluated['data_blocks'])):
+            label = evaluated['labels'][i]
+            data_line = data_ax.plot(data_x, evaluated['data_blocks'][i], '-', label=f'{label} data')[0]
+            model_lines.append(
+                data_ax.plot(
+                    lam,
+                    evaluated['model_blocks'][i],
+                    '--',
+                    color=data_line.get_color(),
+                    label=f'{label} model',
+                )[0]
+            )
+        data_ax.set_ylabel('Spectral Value')
+        data_ax.set_xlabel('wavelength (um)')
+        data_ax.set_xlim(*data_xlim)
+        data_ax.legend()
+        n_line = nk_ax.plot(lam, evaluated['nk'].real, '-', label='n model')[0]
+        k_line = nk_ax.plot(lam, evaluated['nk'].imag, '-', label='k model')[0]
+        nk_ax.set_ylabel('n, k')
+        nk_ax.set_xlabel('wavelength (um)')
+        nk_ax.set_xlim(*data_xlim)
+        nk_ax.legend()
+
+    def _set_title(evaluated_blocks):
+        if _np.isfinite(evaluated_blocks['mse']):
+            title = (
+                "Interactive oscillator guess | mse = "
+                f"{evaluated_blocks['mse']:.4g}"
+            )
+        else:
+            title = "Interactive oscillator guess"
+        fig.suptitle(title)
+
+    _set_title(evaluated)
+    fig.tight_layout()
+
+    def _update_plot(change=None):
+        p = _current_p_from_sliders()
+        evaluated = _evaluate_model_blocks(context, p, interactive=True, require_target_lengths=False)
+        for line, y_block in zip(model_lines, evaluated['model_blocks']):
+            line.set_ydata(y_block)
+        n_line.set_ydata(evaluated['nk'].real)
+        k_line.set_ydata(evaluated['nk'].imag)
+        _set_title(evaluated)
+        controller.refresh()
+
+    output = _Output()
+    model_rows = [
+        _HBox([_Label(f"{model_name}:"), *model_sliders])
+        for model_name, model_sliders in sliders_by_model.items()
+    ]
+    widget = _VBox([*model_rows, output])
+    controller = _InteractiveOscillatorController(
+        widget,
+        output,
+        slider_infos,
+        model_entries,
+        p0,
+        fig,
+        (data_ax, nk_ax),
+        _plt,
+        display_func=_display,
+    )
+
+    for slider_info in slider_infos:
+        slider = slider_info['slider']
+        if hasattr(slider, 'observe'):
+            slider.observe(_update_plot, names='value')
+            slider_info['observer'] = _update_plot
+
+    controller.refresh()
+    return controller
+
+def fit_to_oscillator(wavelength, y_data,
                       oscillator_dict,
                       y_eval=None,
                       args=(),
@@ -756,21 +1625,25 @@ def fit_to_oscillator(x, y_data,
                       weights=None,
                       fixed_params=None,
                       fit_extra_params=None,
-                      x_units='um', 
-                      least_squares_method='trf',
+                      wvl_units='um',
+                      least_squares_args=None,
                       verbose=0):
     '''
     Fit oscillator parameters to measured data.
 
     Parameters
     ----------
-    x : array_like
-        Independent variable array (e.g., wavelength in microns).
-    y_data : list or tuple
-        Measured target data.
-        - If y_eval is None: y_data must be [n_data, k_data].
-                - If y_eval is provided: y_data must have one entry per output
-                    returned by y_eval, e.g. [R_measured, T_measured].
+    wavelength : numpy.ndarray
+        1D wavelength array. Values are converted to microns using wvl_units.
+    y_data : pandas.DataFrame
+        Measured target data indexed by wavelength. The index name must be
+        'wavelength', and index values are assumed to already be in microns.
+        If wavelength does not exactly match the index, target columns are
+        interpolated to wavelength. Extrapolation is not allowed.
+        - If y_eval is None: y_data must have one or more paired n/k column
+          groups, such as 'n'/'k' or 'n (sample1)'/'k (sample1)'.
+        - If y_eval is provided: all DataFrame columns are used in column order,
+          with one column per output returned by y_eval.
     oscillator_dict : dict
         Dictionary with named models containing 'type' key and parameters.
         Format:
@@ -779,7 +1652,7 @@ def fit_to_oscillator(x, y_data,
         Custom evaluator function with signature f(lam, nk, *args)
         that returns one array or multiple arrays (tuple/list).
         Example: y_eval = fun_RT where fun_RT returns (R_model, T_model).
-        If None, legacy fitting to [n_data, k_data] is used.
+        If None, direct fitting to paired n/k columns is used.
     args : tuple, optional
         Extra arguments passed to y_eval following scipy convention.
         For example, y_eval(lam, nk, *args). Default is ().
@@ -790,8 +1663,9 @@ def fit_to_oscillator(x, y_data,
         Residual weights.
         - None: uniform weights.
         - scalar: same weight for all residuals.
-        - Legacy mode (y_eval is None): tuple/list of 2 entries for n and k.
-        - Custom mode: tuple/list with one entry per target in y_data.
+        - Direct mode (y_eval is None): tuple/list of 2 entries applies to
+          n and k across all samples; one entry per target column is also accepted.
+        - Custom mode: tuple/list with one entry per target column in y_data.
           Each entry can be scalar or array matching target length.
     fixed_params : dict, list, or None, optional
         Parameters to keep fixed (not optimized).
@@ -810,17 +1684,20 @@ def fit_to_oscillator(x, y_data,
         }
         The optional weight adds quadratic regularization terms to the residual:
         sqrt(weight) * (param - init).
-    x_units : str, optional
-        Units of x (default: 'um').
-    least_squares_method : str, optional
-        Method for scipy.optimize.least_squares (default: 'trf').
+    wvl_units : str, optional
+        Units of wavelength (default: 'um').
+    least_squares_args : dict, optional
+        Additional keyword arguments forwarded to scipy.optimize.least_squares,
+        such as {'method': 'trf', 'max_nfev': 500, 'loss': 'soft_l1'}.
+        The arguments fun, x0, bounds, and verbose are controlled by
+        fit_to_oscillator and cannot be passed here.
     verbose : int, optional
         Verbosity level for least_squares output (default: 0).
 
     Returns
     -------
-    dict
-        Oscillator dictionary with fitted and fixed parameters.
+    object
+        Fitted oscillator result with model, lam_range, and lam_units attributes.
     OptimizeResult
         Output from scipy.optimize.least_squares.
         Additional attributes are attached:
@@ -828,16 +1705,26 @@ def fit_to_oscillator(x, y_data,
         - fit_extra_flat: flattened fitted extra parameters.
     '''
 
-    lam = _convert_units(x, x_units, to='um')
-    lam = _np.asarray(lam, float)
-
-    if isinstance(args, tuple):
-        eval_args = args
-    else:
+    if not isinstance(args, tuple):
         raise TypeError("args must be a tuple")
+    eval_args = args
+
+    if least_squares_args is None:
+        least_squares_args = {}
+    elif not isinstance(least_squares_args, dict):
+        raise TypeError("least_squares_args must be a dict")
+    else:
+        least_squares_args = least_squares_args.copy()
+
+    reserved_least_squares_args = {'fun', 'x0', 'bounds', 'verbose'}
+    invalid_least_squares_args = reserved_least_squares_args.intersection(least_squares_args)
+    if invalid_least_squares_args:
+        raise ValueError(
+            "least_squares_args cannot include arguments controlled by fit_to_oscillator: "
+            f"{sorted(invalid_least_squares_args)}"
+        )
 
     legacy_mode = y_eval is None
-    y_eval_fn = None
     y_eval_min_extra_args = 0
 
     fit_extra_specs, fit_extra_order = _normalize_fit_extra_params(fit_extra_params)
@@ -845,21 +1732,10 @@ def fit_to_oscillator(x, y_data,
     if legacy_mode and len(fit_extra_order) > 0:
         raise ValueError("fit_extra_params can only be used when y_eval is provided")
 
-    if legacy_mode:
-        # Legacy API path: y_data is interpreted as [n_data, k_data].
-        if not isinstance(y_data, (list, tuple)) or len(y_data) != 2:
-            raise ValueError("When y_eval is None, y_data must be [n_data, k_data]")
-        n_data = _as_1d_real(y_data[0], 'n_data')
-        k_data = _as_1d_real(y_data[1], 'k_data')
-        y_data_blocks = [n_data, k_data]
-        if len(eval_args) > 0:
-            raise ValueError("args can only be used when y_eval is provided")
-    else:
-        # Custom API path: y_eval is one forward model returning all target blocks.
+    if not legacy_mode:
+        # Fit-only validation: custom evaluators may receive fitted extra kwargs.
         if not callable(y_eval):
             raise TypeError("y_eval must be callable")
-        if not isinstance(y_data, (list, tuple)):
-            raise TypeError("y_data must be a list or tuple when y_eval is provided")
 
         # Check y_eval positional/keyword signature compatibility.
         sig = _inspect.signature(y_eval)
@@ -910,96 +1786,54 @@ def fit_to_oscillator(x, y_data,
                     f"y_eval requires keyword-only argument '{p.name}' not provided in fit_extra_params"
                 )
 
-        y_data_blocks = [_as_1d_real(arr, f'y_data[{i}]') for i, arr in enumerate(y_data)]
-        y_eval_fn = y_eval
         min_positional = len([p for p in pos_params if p.default is p.empty])
         y_eval_min_extra_args = max(0, min_positional - 2)
+
+    context = _prepare_oscillator_fit_context(
+        wavelength,
+        y_data,
+        oscillator_dict,
+        y_eval,
+        eval_args,
+        wvl_units,
+        bounds,
+        fixed_params,
+        mode='fit',
+    )
+    lam = context['lam']
+    y_data_blocks = context['data_blocks']
+    direct_kinds = context['direct_kinds']
+    model_entries = context['model_entries']
 
     target_sizes = [len(arr) for arr in y_data_blocks]
     y = _np.concatenate(y_data_blocks)
 
-    default_bounds = {
-        'drude': {'epsinf': (0, 10), 'wp': (1E-5, 100), 'gamma': (1E-5, 10)},
-        'lorentz': {'epsinf': (0, 10), 'wp': (1E-5, 100), 'wn': (1E-2, 10), 'gamma': (1E-5, 10)},
-        'tauc-lorentz': {'A':  (1E-5, 100), 'C':  (1E-5, 100), 'E0': (0, 10), 'Eg': (0, 10)},
-        'gaussian': {'A':  (1E-5, 100), 'Br':  (1E-5, 100), 'E0': (0, 10)}
-    }
-
-    base_models = {
-        'tauc-lorentz': tauc_lorentz,
-        'gaussian': gaussian,
-        'lorentz': lorentz,
-        'drude': drude
-    }
-
-    if bounds is not None and not isinstance(bounds, dict):
-        raise TypeError("bounds must be a dictionary or None")
-
-    fixed_params_dict = _normalize_fixed_params(fixed_params)
-
-    p0 = []
-    lb = []
-    ub = []
-    fitted_param_index = {}
-    fit_extra_index = {}
-
-    for model_name, model_dict in oscillator_dict.items():
-        if 'type' not in model_dict:
-            raise ValueError(
-                f"Model '{model_name}' is missing required 'type' key. "
-                "Each model must define one of: drude, lorentz, tauc-lorentz, gaussian."
-            )
-
-        model_type = model_dict['type'].lower()
-        if model_type not in base_models:
-            raise ValueError(
-                f"Model '{model_name}': type '{model_type}' is not recognized. "
-                f"Valid types are: {list(base_models.keys())}"
-            )
-
-        sig = _inspect.signature(base_models[model_type])
-        required_params = list(sig.parameters.keys())[1:]
-        model_params = {k: v for k, v in model_dict.items() if k != 'type'}
-
-        missing_params = set(required_params) - set(model_params.keys())
-        if missing_params:
-            raise ValueError(
-                f"Model '{model_name}' (type: {model_type}) is missing parameters: {missing_params}"
-            )
-
-        user_bounds_for_model = bounds.get(model_name) if bounds else None
-        model_bounds = _merge_bounds_with_defaults(
-            model_name,
-            user_bounds_for_model,
-            default_bounds[model_type]
-        )
-
-        model_fixed = fixed_params_dict.get(model_name, set())
-        for param_name in required_params:
-            if param_name in model_fixed:
-                # Keep fixed parameters at their input values.
-                continue
-
-            # Register only free parameters in optimizer vectors.
-            fitted_param_index[(model_name, param_name)] = len(p0)
-            p0.append(float(model_params[param_name]))
-            lb.append(float(model_bounds[param_name][0]))
-            ub.append(float(model_bounds[param_name][1]))
+    p0 = context['p0'].copy()
+    lower_bounds = context['lower_bounds'].copy()
+    upper_bounds = context['upper_bounds'].copy()
+    fit_extra_entries = []
 
     # Add fit_extra_params entries to optimizer vector.
     for name in fit_extra_order:
         spec = fit_extra_specs[name]
         start = len(p0)
         n = spec['init_flat'].size
-        fit_extra_index[name] = (start, n)
+        fit_slice = slice(start, start + n)
 
-        p0.extend(spec['init_flat'].tolist())
-        lb.extend(spec['lb_flat'].tolist())
-        ub.extend(spec['ub_flat'].tolist())
+        p0 = _np.concatenate([p0, spec['init_flat']])
+        lower_bounds = _np.concatenate([lower_bounds, spec['lb_flat']])
+        upper_bounds = _np.concatenate([upper_bounds, spec['ub_flat']])
+        fit_extra_entries.append({
+            'name': name,
+            'shape': spec['shape'],
+            'slice': fit_slice,
+            'init_flat': spec['init_flat'],
+            'weight': spec['weight'],
+        })
 
     p0 = _np.asarray(p0, float)
-    p_bounds = (_np.asarray(lb, float), _np.asarray(ub, float))
-    n_osc_params = len(fitted_param_index)
+    p_bounds = (lower_bounds, upper_bounds)
+    n_osc_params = sum(entry['free_vector_locs'].size for entry in model_entries)
     n_fit_extra_params = sum(fit_extra_specs[name]['init_flat'].size for name in fit_extra_order)
 
     if weights is None:
@@ -1012,10 +1846,13 @@ def fit_to_oscillator(x, y_data,
             raise ValueError(f"weights length ({len(w)}) must match residual length ({len(y)})")
     elif isinstance(weights, (list, tuple)):
         if legacy_mode and len(weights) == 2:
-            w = _np.concatenate([
-                _build_weight_block(weights[0], target_sizes[0], 0),
-                _build_weight_block(weights[1], target_sizes[1], 1)
-            ])
+            direct_weight_blocks = []
+            for i, kind in enumerate(direct_kinds):
+                weight_idx = 0 if kind == 'n' else 1
+                direct_weight_blocks.append(
+                    _build_weight_block(weights[weight_idx], target_sizes[i], i)
+                )
+            w = _np.concatenate(direct_weight_blocks)
         else:
             if len(weights) != len(target_sizes):
                 raise ValueError(
@@ -1029,81 +1866,29 @@ def fit_to_oscillator(x, y_data,
     else:
         raise TypeError("weights must be None, scalar, ndarray, or list/tuple")
 
-    def construct_oscillator_dict(p):
-        # Rebuild a full oscillator_dict from current optimization vector p.
-        out = {}
-        for model_name, model_dict in oscillator_dict.items():
-            out[model_name] = {'type': model_dict['type']}
-            model_type = model_dict['type'].lower()
-            required_params = list(_inspect.signature(base_models[model_type]).parameters.keys())[1:]
-            for param_name in required_params:
-                key = (model_name, param_name)
-                if key in fitted_param_index:
-                    out[model_name][param_name] = float(p[fitted_param_index[key]])
-                else:
-                    out[model_name][param_name] = float(model_dict[param_name])
-        return out
-
     def construct_fit_extra_dict(p):
         out = {}
-        for name in fit_extra_order:
-            start, n = fit_extra_index[name]
-            shape = fit_extra_specs[name]['shape']
-            vals = _np.asarray(p[start:start+n], dtype=float)
+        for entry in fit_extra_entries:
+            vals = _np.asarray(p[entry['slice']], dtype=float)
+            shape = entry['shape']
             if shape == ():
-                out[name] = float(vals[0])
+                out[entry['name']] = float(vals[0])
             else:
-                out[name] = vals.reshape(shape)
+                out[entry['name']] = vals.reshape(shape)
         return out
 
+    def construct_oscillator_dict(p):
+        return _construct_oscillator_dict_from_entries(model_entries, p)
+
     def resid(p):
-        # Compute nk from current parameters before mapping to measured targets.
-        osc = construct_oscillator_dict(p)
-        nk = multi_oscillator(lam, osc)
-
-        if legacy_mode:
-            # Compare fitted nk directly against n/k measured blocks.
-            model_blocks = [
-                _as_1d_real(nk.real, 'model_n'),
-                _as_1d_real(nk.imag, 'model_k')
-            ]
-        else:
-            extra_kwargs = construct_fit_extra_dict(p)
-            # Apply one custom forward function and split its outputs into blocks.
-            try:
-                model_out = y_eval_fn(lam, nk, *eval_args, **extra_kwargs)
-            except TypeError as exc:
-                if y_eval_min_extra_args > 0:
-                    raise RuntimeError(
-                        "y_eval failed due to argument mismatch; verify args matches "
-                        "y_eval(lam, nk, *args)"
-                    ) from exc
-                raise RuntimeError(f"y_eval failed: {exc}") from exc
-            except Exception as exc:
-                raise RuntimeError(f"y_eval failed: {exc}") from exc
-
-            if isinstance(model_out, (list, tuple)):
-                model_out_blocks = list(model_out)
-            else:
-                model_out_blocks = [model_out]
-
-            if len(model_out_blocks) != len(y_data_blocks):
-                raise ValueError(
-                    f"y_eval returned {len(model_out_blocks)} outputs but y_data has "
-                    f"{len(y_data_blocks)} target blocks"
-                )
-
-            model_blocks = [
-                _as_1d_real(model_out_blocks[i], f'model_output[{i}]')
-                for i in range(len(model_out_blocks))
-            ]
-
-        for i, (model_i, data_i) in enumerate(zip(model_blocks, y_data_blocks)):
-            if len(model_i) != len(data_i):
-                raise ValueError(
-                    f"Target length mismatch at index {i}: "
-                    f"model has {len(model_i)} points, data has {len(data_i)} points"
-                )
+        # Shared evaluator returns blocks in the same order as y_data_blocks.
+        evaluated = _evaluate_model_blocks(
+            context,
+            p,
+            extra_kwargs=construct_fit_extra_dict(p),
+            y_eval_min_extra_args=y_eval_min_extra_args,
+        )
+        model_blocks = evaluated['model_blocks']
 
         r = _np.concatenate([
             model_i - data_i for model_i, data_i in zip(model_blocks, y_data_blocks)
@@ -1112,12 +1897,10 @@ def fit_to_oscillator(x, y_data,
 
         # Optional quadratic regularization around init for fit_extra params.
         reg_terms = []
-        for name in fit_extra_order:
-            spec = fit_extra_specs[name]
-            if spec['weight'] > 0:
-                start, n = fit_extra_index[name]
-                vals = _np.asarray(p[start:start+n], dtype=float)
-                reg = _np.sqrt(spec['weight']) * (vals - spec['init_flat'])
+        for entry in fit_extra_entries:
+            if entry['weight'] > 0:
+                vals = _np.asarray(p[entry['slice']], dtype=float)
+                reg = _np.sqrt(entry['weight']) * (vals - entry['init_flat'])
                 reg_terms.append(reg)
 
         if reg_terms:
@@ -1135,7 +1918,7 @@ def fit_to_oscillator(x, y_data,
         res.fit_extra_params = {}
         res.fit_extra_flat = _np.array([], dtype=float)
     else:
-        res = _least_squares(resid, p0, bounds=p_bounds, method=least_squares_method, verbose=verbose)
+        res = _least_squares(resid, p0, bounds=p_bounds, verbose=verbose, **least_squares_args)
 
         res.fit_extra_params = construct_fit_extra_dict(res.x)
         if n_fit_extra_params > 0:
@@ -1498,6 +2281,9 @@ PMMA = lambda wavelength: get_ri_info(wavelength,'organic','(C5H8O2)n - poly(met
 
 # refractive index of PVDF-HFP
 PVDF  = lambda wavelength: get_nkfile(wavelength, 'PVDF-HFP_Mandal2018', get_from_local_path = True)[0]
+
+# refractive index of Polystyrene
+PS = lambda wavelength: get_ri_info(wavelength,'organic','(C8H8)n - polystyrene','Zhang')[0]
 
 #------------------------------------------------------------------------------
 #                                   Others
