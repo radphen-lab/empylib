@@ -6,6 +6,7 @@ import numpy as np
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
 import empylib.miescattering as mie
+import empylib.nklib as nk
 import empylib.rad_transfer as rt
 import empylib.waveoptics as wv
 
@@ -184,6 +185,14 @@ class MieZeroContrastTest(unittest.TestCase):
 
 
 class MieAbsorbingHostTest(unittest.TestCase):
+    @staticmethod
+    def _max_adjacent_relative_jump(values):
+        values = np.asarray(values, dtype=float)
+        left = values[:-1]
+        right = values[1:]
+        scale = np.maximum(np.maximum(np.abs(left), np.abs(right)), 1e-30)
+        return np.max(np.abs(np.diff(values)) / scale)
+
     def test_01_phase_function_matches_direct_qsca(self):
         wavelength = np.array([0.29536], dtype=float)
         n_host = np.array([0.61832 + 0.83293j], dtype=complex)
@@ -233,6 +242,161 @@ class MieAbsorbingHostTest(unittest.TestCase):
         self.assertEqual(s_q.shape, (theta.size, wavelength.size))
         self.assertTrue(np.all(np.isfinite(s_q)))
         self.assertTrue(np.all(s_q >= 0.0))
+
+    def test_03_effective_medium_tio2_caco3_no_uv_spike(self):
+        wavelength = np.logspace(np.log10(0.25), np.log10(2.5), 80)
+        n_particle = [nk.TiO2(wavelength), nk.CaCO3(wavelength)]
+
+        cabs, csca, gcos, _ = mie.cross_section_ensemble(
+            wavelength=wavelength,
+            Nh=1.5,
+            Np=n_particle,
+            D=[0.6, 1.0],
+            fv=0.5,
+            effective_medium=True,
+            dependent_scatt=False,
+            phase_function=False,
+        )
+
+        self.assertTrue(np.all(np.isfinite(cabs)))
+        self.assertTrue(np.all(np.isfinite(csca)))
+        self.assertTrue(np.all(np.isfinite(gcos)))
+        self.assertGreater(cabs[0], 0.1)
+        self.assertLess(np.max(csca), 5.0)
+        self.assertTrue(np.all(cabs >= -1e-10))
+
+    def test_04_near_lossless_effective_host_tio2_is_smooth(self):
+        wavelength = np.linspace(0.6035, 0.6065, 31)
+        n_particle = nk.TiO2(wavelength)
+
+        _, csca_independent, _, _ = mie.cross_section_ensemble(
+            wavelength=wavelength,
+            Nh=1.5,
+            Np=n_particle,
+            D=1.0,
+            fv=0.5,
+            effective_medium=True,
+            dependent_scatt=False,
+            phase_function=False,
+        )
+        _, csca_dependent, _, _ = mie.cross_section_ensemble(
+            wavelength=wavelength,
+            Nh=1.5,
+            Np=n_particle,
+            D=1.0,
+            fv=0.5,
+            effective_medium=True,
+            dependent_scatt=True,
+            phase_function=False,
+            n_theta=801,
+        )
+
+        self.assertLess(self._max_adjacent_relative_jump(csca_independent), 0.05)
+        self.assertLess(self._max_adjacent_relative_jump(csca_dependent), 0.05)
+
+    def test_05_aerogel_air_pores_do_not_report_negative_absorption(self):
+        wavelength = np.array([0.704545454545, 1.61363636364], dtype=float)
+        porosity = 0.846
+        n_aerogel = nk.emt_brugg(porosity, 1.0, nk.SiO2(wavelength))
+
+        for dependent_scatt in (False, True):
+            with self.subTest(dependent_scatt=dependent_scatt):
+                cabs, csca, gcos, _ = mie.cross_section_ensemble(
+                    wavelength=wavelength,
+                    Nh=n_aerogel,
+                    Np=1.0,
+                    D=0.05,
+                    fv=porosity,
+                    effective_medium=True,
+                    dependent_scatt=dependent_scatt,
+                    phase_function=False,
+                    n_theta=401,
+                )
+
+                self.assertTrue(np.all(np.isfinite(cabs)))
+                self.assertTrue(np.all(np.isfinite(csca)))
+                self.assertTrue(np.all(np.isfinite(gcos)))
+                self.assertTrue(np.all(cabs >= -1e-18))
+
+    def test_06_large_complex_size_parameter_is_stable(self):
+        wavelength = np.array([0.5], dtype=float)
+        n_host = np.array([1.5 + 120j], dtype=complex)
+        n_particle = np.array([2.0 + 0.01j], dtype=complex)
+
+        qabs, qsca, gcos = mie.scatter_efficiency(
+            wavelength=wavelength,
+            Nh=n_host,
+            Np=n_particle,
+            D=1.0,
+        )
+
+        self.assertGreater((2 * np.pi * n_host[0] / wavelength[0] * 0.5).imag, 360.0)
+        self.assertTrue(np.all(np.isfinite(qabs)))
+        self.assertTrue(np.all(np.isfinite(qsca)))
+        self.assertTrue(np.all(np.isfinite(gcos)))
+        self.assertGreaterEqual(qabs[0], 0.0)
+        self.assertGreaterEqual(qsca[0], 0.0)
+
+        with self.assertRaises(FloatingPointError):
+            mie.scatter_coefficients(
+                wavelength=wavelength,
+                Nh=n_host,
+                Np=n_particle,
+                D=1.0,
+            )
+
+    def test_07_absorbing_host_phase_function_integrates_to_direct_values(self):
+        wavelength = np.array([0.29536], dtype=float)
+        n_host = np.array([0.61832 + 0.83293j], dtype=complex)
+        n_particle = np.array([1.03071 + 0.00002j], dtype=complex)
+        diameter = 2.371
+
+        _, csca, gcos, phase_fun = mie.cross_section_ensemble(
+            wavelength=wavelength,
+            Nh=n_host,
+            Np=n_particle,
+            D=diameter,
+            fv=0.0,
+            effective_medium=False,
+            dependent_scatt=False,
+            phase_function=True,
+            n_theta=721,
+        )
+
+        qsca_phase, g_phase = mie.scatter_from_phase_function(phase_fun)
+        area = np.pi * (diameter / 2.0) ** 2
+        np.testing.assert_allclose(qsca_phase * area, csca, rtol=1e-6, atol=1e-9)
+        np.testing.assert_allclose(g_phase, gcos, rtol=1e-6, atol=1e-9)
+
+    def test_08_t_beer_lambert_effective_medium_matches_manual_host(self):
+        wavelength = np.array([0.45, 0.65], dtype=float)
+        n_host = np.array([1.45 + 0.001j, 1.46 + 0.002j], dtype=complex)
+        n_particle = np.array([2.2 + 0.05j, 2.1 + 0.04j], dtype=complex)
+        fv = 0.2
+        diameter = 0.35
+        thickness = 0.02
+
+        effective_host = nk.emt_brugg(fv, n_particle, n_host)
+        result_auto = rt.T_beer_lambert(
+            wavelength=wavelength,
+            N_host=n_host,
+            N_particle=n_particle,
+            D=diameter,
+            fv=fv,
+            thickness=thickness,
+            effective_medium=True,
+        )
+        result_manual = rt.T_beer_lambert(
+            wavelength=wavelength,
+            N_host=effective_host,
+            N_particle=n_particle,
+            D=diameter,
+            fv=fv,
+            thickness=thickness,
+            effective_medium=False,
+        )
+
+        np.testing.assert_allclose(result_auto.to_numpy(), result_manual.to_numpy(), rtol=1e-10, atol=1e-12)
 
 
 if __name__ == "__main__":

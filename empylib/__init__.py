@@ -10,6 +10,7 @@ __copyright__ = 'Copyright 2023 Francisco V. Ramirez-Cuevas'
 from .utils import *
 from .nklib import *
 from .ref_spectra import *
+from .dense_spheres import *
 from .miescattering import *
 from .waveoptics import *
 from .rad_transfer import *

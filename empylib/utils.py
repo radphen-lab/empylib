@@ -329,9 +329,21 @@ def _check_mie_inputs(wavelength=None, N_host=None, Np_shells=None, D=None, *, s
           - 2D array: multilayer, polydisperse with shape (n_layers, n_bins)
         For multilayer monodisperse (list of floats): strictly increasing.
         For multilayer polydisperse (list of arrays): element-wise strictly increasing across layers.
-    size_dist : None or 1D array-like of float, optional (default None)
-        Size-distribution weights. If omitted for polydisperse `D`, a uniform
-        number distribution is assumed and normalized automatically.
+    size_dist : None, 1D array-like of float, or closed-form distribution object, optional (default None)
+        Diameter **number**-density distribution (Botet's n(a), a = D/2; not
+        volume- or intensity-weighted). Either:
+          - a tabulated array of weights (renormalized to sum to 1
+            regardless of input scale). If omitted for polydisperse `D`, a
+            uniform number distribution is assumed and normalized
+            automatically.
+          - a closed-form distribution object (from `empylib.dense_spheres`:
+            `schulz`, `truncated_normal`, `inverse_gaussian`, `exponential`),
+            duck-typed via a `.pdf(D)` method. If `D` is None, the object's
+            `.discretize()` method auto-generates a diameter grid and
+            weights; if `D` is given explicitly, the object's `.pdf(D)` is
+            evaluated on that grid instead. Either way, `size_dist_out`
+            below is always a concrete, normalized ndarray -- the original
+            object is never returned by this function.
 
     Returns
     -------
@@ -348,6 +360,9 @@ def _check_mie_inputs(wavelength=None, N_host=None, Np_shells=None, D=None, *, s
     -----
     - If both D and Np_shells are provided, their number of layers must match.
     - For polydisperse `D`, omitted `size_dist` defaults to uniform weights.
+    - A closed-form distribution object passed as `size_dist` describes a
+      single, homogeneous-sphere size ensemble; it is not supported together
+      with a multilayer `D` (a list of per-layer arrays).
     """
     # ---- wavelength ----
     if wavelength is None:
@@ -373,6 +388,19 @@ def _check_mie_inputs(wavelength=None, N_host=None, Np_shells=None, D=None, *, s
         return 1
 
     n_layers_hint = _infer_layer_count(Np_shells)
+
+    # ---- closed-form distribution object detection (duck-typed via .pdf) ----
+    # size_dist may be a distribution object built by empylib.dense_spheres
+    # (schulz, truncated_normal, inverse_gaussian, exponential) instead of a
+    # tabulated array. Detected structurally (hasattr 'pdf') so this module
+    # never needs to import dense_spheres.py (avoids a circular import).
+    dist_obj = None
+    if size_dist is not None and not isinstance(size_dist, _np.ndarray) and hasattr(size_dist, 'pdf'):
+        dist_obj = size_dist
+        if D is None:
+            D, size_dist = dist_obj.discretize()      # auto-generate grid + weights
+        else:
+            size_dist = None                          # defer; evaluate pdf() once D_out is known
 
     # ---- D (diameters) → list[ndarray]
     D_out = None
@@ -531,6 +559,10 @@ def _check_mie_inputs(wavelength=None, N_host=None, Np_shells=None, D=None, *, s
                 raise ValueError(f"N_host length must equal len(wavelength)={n_wavelengths}.")
             N_host_out = arr
 
+    # ---- evaluate a closed-form distribution's pdf() on the user-supplied D grid ----
+    if dist_obj is not None and size_dist is None and D_out is not None:
+        size_dist = dist_obj.pdf(D_out[0])
+
     # ---- size_dist (normalize & validate) ----
     if D_out is None:
         # Without D, default to None
@@ -683,19 +715,26 @@ def _prepare_tabulated_phase_fun_for_iad(
     wavelength: _np.ndarray,
 ) -> _pd.DataFrame:
     """
-    Convert theta-indexed phase-function DataFrame (degrees) into a mu-indexed
-    DataFrame sorted ascending in [-1, 1], as expected by iadpython TABULATED mode.
+    Convert a theta-indexed phase-function DataFrame into a mu-indexed DataFrame
+    sorted ascending in [-1, 1], as expected by iadpython TABULATED mode. The theta
+    index may be in radians [0, pi] or degrees [0, 180]; units are auto-detected.
     """
     if not isinstance(phase_fun, _pd.DataFrame):
-        raise TypeError("phase_fun must be a pandas DataFrame with theta-degree index.")
+        raise TypeError("phase_fun must be a pandas DataFrame with a theta index (radians or degrees).")
 
     theta_idx = _np.asarray(phase_fun.index, dtype=float)
     if theta_idx.ndim != 1:
-        raise ValueError("phase_fun index must be 1D theta (degrees).")
+        raise ValueError("phase_fun index must be 1D theta (radians or degrees).")
     if theta_idx.size < 2:
         raise ValueError("phase_fun must contain at least two angular rows.")
-    if theta_idx.min() < 0.0 or theta_idx.max() > 180.0:
-        raise ValueError("phase_fun index (theta) must lie within [0°, 180°].")
+    # theta index may be radians [0, pi] or degrees [0, 180]; auto-detect to match
+    # the mixed conventions emitted across miescattering (phase_scatt_ensemble emits
+    # radians, _phase_function_single emits degrees). Same heuristic as
+    # scatter_from_phase_function.
+    is_radians = bool(theta_idx.max() <= 2.0 * _np.pi + 1e-9 and theta_idx.min() >= -1e-9)
+    theta_rad = theta_idx if is_radians else _np.radians(theta_idx)
+    if theta_rad.min() < -1e-9 or theta_rad.max() > _np.pi + 1e-6:
+        raise ValueError("phase_fun index (theta) must span [0, pi] rad or [0, 180] deg.")
 
     try:
         pf_values = phase_fun.reindex(columns=_np.asarray(wavelength, dtype=float), copy=False).values
@@ -705,7 +744,7 @@ def _prepare_tabulated_phase_fun_for_iad(
     if pf_values.shape != (theta_idx.size, _np.asarray(wavelength).size):
         raise ValueError("phase_fun must have shape (n_theta, n_lambda) matching wavelength.")
 
-    mu = _theta_to_mu(_np.radians(theta_idx))
+    mu = _theta_to_mu(theta_rad)
     order = _np.argsort(mu)
     pf_mu = _pd.DataFrame(pf_values[order, :], index=mu[order], columns=_np.asarray(wavelength, dtype=float))
     pf_mu.index.name = "cos(theta)"

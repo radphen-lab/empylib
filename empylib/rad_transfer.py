@@ -139,14 +139,15 @@ def T_beer_lambert(wavelength: _Union[float, _np.ndarray],                      
             print("Warning: Dependent scattering theory not recommended for metallic particles.")
     
     # ---------- Effective medium for host (if your convention is to dress N_host) ----------
-    if effective_medium:
-        Nh = _effective_host(fv, N_particle, N_host, D, size_dist,
-                            emt_multilayer_fn=_emt_multilayer_sphere,
-                            emt_brugg_fn=_emt_brugg,
-                            )
+    N_host_eff = N_host.copy()
+    if effective_medium and fv > 0.0:
+        N_host_eff = _effective_host(fv, N_particle, N_host, D, size_dist,
+                                    emt_multilayer_fn=_emt_multilayer_sphere,
+                                    emt_brugg_fn=_emt_brugg,
+                                    )
 
     # ---------- Mie cross sections and phase function ----------
-    cabs, csca, _, _ = _mie.cross_section_ensemble(wavelength, N_host, N_particle, D, fv, 
+    cabs, csca, _, _ = _mie.cross_section_ensemble(wavelength, N_host_eff, N_particle, D, fv, 
                                                   size_dist=size_dist,
                                                   check_inputs=False,
                                                   effective_medium=False,
@@ -171,7 +172,7 @@ def T_beer_lambert(wavelength: _Union[float, _np.ndarray],                      
     theta_rad = aoi
     Rp, Tp = _wv.incoh_multilayer(
         wavelength,
-        N_layers=[N_host],
+        N_layers=[N_host_eff],
         thickness=thickness,
         aoi=theta_rad,
         N_above=N_above,
@@ -180,7 +181,7 @@ def T_beer_lambert(wavelength: _Union[float, _np.ndarray],                      
     )
     Rs, Ts = _wv.incoh_multilayer(
         wavelength,
-        N_layers=[N_host],
+        N_layers=[N_host_eff],
         thickness=thickness,
         aoi=theta_rad,
         N_above=N_above,
@@ -190,7 +191,7 @@ def T_beer_lambert(wavelength: _Union[float, _np.ndarray],                      
     T    = (Ts + Tp)/2
     Rtot = (Rp + Rs)/2
     
-    theta1 = _wv.snell(N_above, N_host, theta_rad)
+    theta1 = _wv.snell(N_above, N_host_eff, theta_rad)
         
     Ttot = T*_np.exp(-k_abs*thickness/_np.cos(theta1.real))
     Tspec = T*_np.exp(-k_ext*thickness/_np.cos(theta1.real))
@@ -223,6 +224,7 @@ def adm_sphere(wavelength: _Union[float, _np.ndarray],                          
                 effective_medium: bool = False,                                     # whether to compute effective N_host via Bruggeman
                 use_phase_fun: bool = False,                                        # whether to use phase function instead of g
                 n_theta: _Optional[int] = 101,                                          # auto|linspace|legendre angular sampling grid
+                quad_pts: int = 16,                                                 # IAD quadrature points (also sizes the Legendre-moments phase representation)
                 cone_incidence: _Optional[_Tuple[float, float]] = None,             # (theta_min, theta_max) in degrees for diffuse cone incidence
                 lambertian: bool = False                                            # whether to compute Lambertian incidence instead of normal
                 ):
@@ -275,11 +277,18 @@ def adm_sphere(wavelength: _Union[float, _np.ndarray],                          
     use_phase_fun : bool, optional
         Whether to use the full phase function in the radiative transfer (default: False).
         If False, the asymmetry parameter g is used instead (Henyey-Greenstein approximation).
-        Using the phase function is more accurate but also more computationally intensive.
+        When True, the phase function is passed to iadpython as Legendre moments
+        (computed via Gauss-Legendre quadrature directly on the ensemble phase
+        function -- no interpolation), sized for `quad_pts`.
 
     n_theta : int, optional
         Number of angular points used to sample the phase function and structure factor.
         Default is 101.
+
+    quad_pts : int, optional
+        iadpython adding-doubling quadrature points. Also determines how many
+        Legendre moments are computed for the `use_phase_fun=True` path
+        (2*quad_pts+1). Default is 16.
 
     cone_incidence : tuple, optional
         Optional tuple (theta_min, theta_max) in degrees for diffuse cone incidence    
@@ -325,14 +334,19 @@ def adm_sphere(wavelength: _Union[float, _np.ndarray],                          
                                     emt_brugg_fn=_emt_brugg,
                                     )
    
-   #  compute cross sections and phase function
-    cabs, csca, gcos, phase_scatter = _mie.cross_section_ensemble(wavelength, N_host_eff, N_particle, D, fv, 
+   #  compute cross sections. Capture the per-size-bin Mie coefficient cache
+   #  (out_coeff_cache) so a separate phase_function_moments call below can
+   #  reuse it (an/bn depend only on size/wavelength, not scattering angle)
+   #  instead of recomputing the Mie coefficient series from scratch.
+    coeff_cache = []
+    cabs, csca, gcos, _ = _mie.cross_section_ensemble(wavelength, N_host_eff, N_particle, D, fv,
                                                                 size_dist=size_dist,
                                                                 n_theta=n_theta,
                                                                 check_inputs=False,
                                                                 effective_medium=False,
                                                                 dependent_scatt=dependent_scatt,
-                                                                phase_function=use_phase_fun)
+                                                                phase_function=False,
+                                                                out_coeff_cache=coeff_cache)
 
     # ---------- n_tot and coefficients (µm⁻¹) ----------
     # Particle volume (or mean volume if polydisperse)
@@ -347,16 +361,26 @@ def adm_sphere(wavelength: _Union[float, _np.ndarray],                          
 
     # ---------- radiative transfer ----------
     if use_phase_fun:
-        df_results = adm(wavelength, thickness, k_sca, k_abs, N_host=N_host_eff, 
-                                       phase_fun=phase_scatter, 
-                                       N_above=N_above, 
+        # Legendre moments computed directly via Gauss-Legendre quadrature on
+        # mu=cos(theta) -- no interpolation -- reusing the Mie coefficient
+        # cache captured above.
+        a_l = _mie.phase_function_moments(wavelength, N_host_eff, N_particle, D, fv,
+                                          size_dist=size_dist,
+                                          n_moments=2*int(quad_pts) + 1,
+                                          dependent_scatt=dependent_scatt,
+                                          coeff_cache=coeff_cache,
+                                          check_inputs=False)
+        df_results = adm(wavelength, thickness, k_sca, k_abs, N_host=N_host_eff,
+                                       phase_moments=a_l,
+                                       N_above=N_above,
                                        N_below=N_below,
+                                       quad_pts=quad_pts,
                                        cone_incidence=cone_incidence,
                                        lambertian=lambertian)
     else:
-        df_results = adm(wavelength, thickness, k_sca, k_abs, N_host=N_host_eff, 
-                                       gcos=gcos, 
-                                       N_above=N_above, 
+        df_results = adm(wavelength, thickness, k_sca, k_abs, N_host=N_host_eff,
+                                       gcos=gcos,
+                                       N_above=N_above,
                                        N_below=N_below,
                                        cone_incidence=cone_incidence,
                                        lambertian=lambertian)
@@ -368,6 +392,7 @@ def adm(wavelength, thickness, k_sca, k_abs, N_host,
         gcos=None,                                              # optional: asymmetry parameter per λ
         *,
         phase_fun=None,                                         # optional: phase function vs θ (DataFrame only; θ index in degrees 0..180)
+        phase_moments=None,                                     # optional: Legendre moments a_l, shape (n_mom, nλ) -- bypasses TABULATED's interpolation
         N_above=1.0,                                                # refractive index above
         N_below=1.0,                                                # refractive index below
         quad_pts: int = 16,                                     # IAD quadrature points when using a tabulated PF
@@ -391,6 +416,13 @@ def adm(wavelength, thickness, k_sca, k_abs, N_host,
                  shape (nθ, nλ). **Index must be θ in degrees from 0 to 180.**
                  Columns must be the wavelengths (same values as `wavelength`, order-agnostic).
                  The function will convert θ→μ=cosθ and sort μ ascending in [-1, 1].
+                 Intended for external/measured tabulated data.
+      OR
+    - phase_moments: np.ndarray of Legendre moments a_l, shape (n_mom, nλ),
+                 columns in the same order as `wavelength`. Bypasses the
+                 spline+quadrature interpolation `phase_fun` requires --
+                 use `empylib.miescattering.phase_function_moments` to
+                 compute these directly from a Mie/Percus-Yevick ensemble.
     --------------------------------------------------------------------------
     - N_above, N_below : scalar or (nλ,) complex refractive indices above/below (defaults=1.0)
     - quad_pts : quadrature points for IAD when using a tabulated phase function
@@ -426,9 +458,14 @@ def adm(wavelength, thickness, k_sca, k_abs, N_host,
     N_above_arr = _as_1d_array(N_above, "N_above", n_wavelengths=n_wavelengths, dtype=complex)
     N_below_arr = _as_1d_array(N_below, "N_below", n_wavelengths=n_wavelengths, dtype=complex)
 
-    # keep all positive
-    k_sca = _np.maximum(k_sca, 0.0)
-    k_abs = _np.maximum(k_abs, 0.0)
+    # keep all positive AND finite. An overflowing Mie cross section (e.g. a very
+    # large size parameter in the coated-sphere coefficient reconstruction) can
+    # return +inf/NaN; left unchecked this propagates to a = mu_s/mu_t = inf/inf
+    # = NaN and crashes the downstream iadpython solver. Map NaN -> 0 (no
+    # interaction) and +inf -> a large-but-finite coefficient (optically opaque).
+    _K_MAX = 1.0e6  # [µm^-1] far beyond any physical loading -> effectively opaque
+    k_sca = _np.nan_to_num(_np.maximum(k_sca, 0.0), nan=0.0, posinf=_K_MAX, neginf=0.0)
+    k_abs = _np.nan_to_num(_np.maximum(k_abs, 0.0), nan=0.0, posinf=_K_MAX, neginf=0.0)
     N_host_arr.imag = _np.maximum(N_host_arr.imag, 0.0)
 
     # ---------- convert to IAD units (mm^-1); include host absorption via Im(n) ----------
@@ -443,12 +480,14 @@ def adm(wavelength, thickness, k_sca, k_abs, N_host,
 
     # ---------- choose angular description ----------
     use_pf = phase_fun is not None
-    if use_pf and (gcos is not None):
-        raise ValueError("Provide either gcos OR phase_fun, not both.")
-    if (not use_pf) and (gcos is None):
-        raise ValueError("You must provide gcos (per λ) or a tabulated phase_fun.")
+    use_moments = phase_moments is not None
+    _n_given = sum((gcos is not None, use_pf, use_moments))
+    if _n_given > 1:
+        raise ValueError("Provide exactly one of gcos, phase_fun, or phase_moments.")
+    if _n_given == 0:
+        raise ValueError("You must provide gcos (per λ), a tabulated phase_fun, or phase_moments.")
 
-    if not use_pf:
+    if not use_pf and not use_moments:
         gcos = _np.atleast_1d(_np.asarray(gcos, float))
         if gcos.shape != (n_wavelengths,):
             raise ValueError("gcos must have shape (len(wavelength),).")
@@ -462,12 +501,45 @@ def adm(wavelength, thickness, k_sca, k_abs, N_host,
             # Shared conversion keeps theta->mu tabulation consistent across
             # all future iadpython call-sites.
             pf_df = _prepare_tabulated_phase_fun_for_iad(phase_fun, wavelength)
+
+            # Sanitize non-finite phase-function values that can arise from Mie
+            # size-parameter overflow (e.g. large coated-sphere recursion at UV
+            # wavelengths). CubicSpline inside iadpython.redistribution rejects
+            # inf/NaN; replace entire bad wavelength-columns with the isotropic
+            # phase function (p = 1.0, equivalent to g = 0). The optimizer sees a
+            # large residual at those wavelengths and steers away from the
+            # pathological parameters — the same logic as the k_sca/k_abs clamp
+            # applied above.
+            _pf_vals = pf_df.values
+            _bad_cols = ~_np.all(_np.isfinite(_pf_vals), axis=0)
+            if _bad_cols.any():
+                _pf_vals = _pf_vals.copy()
+                _pf_vals[:, _bad_cols] = 1.0   # isotropic fallback (∫p dμ = 2 satisfied)
+                pf_df = _pd.DataFrame(_pf_vals, index=pf_df.index, columns=pf_df.columns)
         else:
             # Older iadpython releases only expose Henyey-Greenstein anisotropy.
             # Collapse the supplied phase function to an equivalent g(λ) so the
             # public `phase_fun=` entrypoint remains usable in those environments.
             _, gcos = _mie.scatter_from_phase_function(phase_fun)
             use_pf = False
+
+    # ---------- prepare phase function (MOMENTS path) ----------
+    if use_moments:
+        phase_moments = _np.asarray(phase_moments, dtype=float)
+        if phase_moments.ndim != 2 or phase_moments.shape[1] != n_wavelengths:
+            raise ValueError(
+                "phase_moments must have shape (n_mom, len(wavelength)); "
+                f"got {phase_moments.shape} for {n_wavelengths} wavelengths."
+            )
+        # Sanitize non-finite moment columns the same way the TABULATED path
+        # sanitizes non-finite phase-function values (Mie size-parameter
+        # overflow at extreme wavelengths): replace the entire column with
+        # the isotropic moments (a_0=1, a_l=0 for l>0, equivalent to g=0).
+        _bad_cols = ~_np.all(_np.isfinite(phase_moments), axis=0)
+        if _bad_cols.any():
+            phase_moments = phase_moments.copy()
+            phase_moments[:, _bad_cols] = 0.0
+            phase_moments[0, _bad_cols] = 1.0
 
     # ---------- run IAD per wavelength ----------
     Ttot  = _np.zeros(n_wavelengths, float)
@@ -506,9 +578,17 @@ def adm(wavelength, thickness, k_sca, k_abs, N_host,
             n_outer_above=complex(N_above_arr[j]),
             n_outer_below=complex(N_below_arr[j]),
         )
-        if not use_pf:
+        if use_moments:
+            # direct Legendre-moments path (bypasses TABULATED's interpolation)
+            s = _iad.Sample(
+                **sample_kwargs,
+                quad_pts=int(quad_pts),
+                pf_type="MOMENTS",
+                pf_data=phase_moments[:, j],
+            )
+        elif not use_pf:
             sample_kwargs["g"] = float(_np.nan_to_num(gcos[j], nan=0.0))
-            s = _iad.Sample(**sample_kwargs)
+            s = _iad.Sample(**sample_kwargs, quad_pts=int(quad_pts))
         else:
             # tabulated phase function path
             pf_col = pf_df.iloc[:, j].to_frame()
