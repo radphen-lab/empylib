@@ -18,7 +18,6 @@ from .utils import (
     _hide_signature,
     _effective_host,
     _estimate_theta_npts,
-    _make_angular_grid,
     _prepare_tabulated_phase_fun_for_iad,
 )
 from .nklib import emt_brugg as _emt_brugg, emt_multilayer_sphere as _emt_multilayer_sphere

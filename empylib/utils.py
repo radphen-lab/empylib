@@ -649,48 +649,6 @@ def _mu_to_theta(mu: _Union[float, _np.ndarray]) -> _np.ndarray:
     """Convert mu=cos(theta) to theta [rad], clipping for numeric safety."""
     return _np.arccos(_np.clip(_np.asarray(mu, dtype=float), -1.0, 1.0))
 
-def _make_angular_grid(
-    n_nodes: int,
-    *,
-    grid_type: str = "auto",
-    prefer_legendre: bool = False,
-    include_endpoints: bool = False,
-) -> _np.ndarray:
-    """
-    Build a 1D theta grid [rad] for scattering calculations.
-
-    Parameters
-    ----------
-    n_nodes : int
-        Requested number of nodes.
-    grid_type : {'auto', 'linspace', 'legendre'}
-        Grid generator mode.
-    prefer_legendre : bool
-        Used when grid_type='auto'. If True, choose Legendre nodes.
-    include_endpoints : bool
-        If True, ensure 0 and pi are explicitly included.
-    """
-    n_eval = int(n_nodes)
-    if n_eval < 2:
-        raise ValueError("n_nodes must be >= 2.")
-
-    mode = str(grid_type).lower()
-    if mode == "auto":
-        mode = "legendre" if prefer_legendre else "linspace"
-
-    if mode == "trapz":
-        theta = _np.linspace(0.0, _np.pi, n_eval)
-    elif mode == "gauss":
-        mu_nodes, _ = _np.polynomial.legendre.leggauss(n_eval)
-        theta = _np.sort(_mu_to_theta(mu_nodes))
-    else:
-        raise ValueError("grid_type must be one of {'auto', 'linspace', 'legendre'}.")
-
-    if include_endpoints:
-        theta = _np.unique(_np.concatenate(([0.0, _np.pi], theta)))
-
-    return theta
-
 def _estimate_theta_npts(
     wavelength: _np.ndarray,
     N_host: _np.ndarray,

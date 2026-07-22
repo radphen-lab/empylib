@@ -348,9 +348,24 @@ class SchulzDistribution:
             raise ValueError("Schulz shape parameter s must be positive.")
 
     def pdf(self, D):
-        """Unnormalized number density n(D) ~ D**(s-1) * exp(-s*D/D_mean) (Eq. 34)."""
+        """Unnormalized number density n(D) ~ D**(s-1) * exp(-s*D/D_mean) (Eq. 34).
+
+        Evaluated in log-space and re-based at the distribution mode before
+        exponentiating: for narrow distributions (large s -- e.g. s~1000 for a
+        3% PDI), D**(s-1) and exp(-s*D/D_mean) individually underflow to 0.0
+        in float64 (D < 1 raised to a ~1000 power), which previously made
+        pdf(D) identically 0 everywhere and corrupted discretize()'s
+        normalized weights into NaN. Re-basing at the mode keeps the peak
+        pdf value at O(1) regardless of s; this is still an unnormalized
+        density (callers normalize the weights themselves), so rescaling by
+        a constant does not change any downstream result.
+        """
         D = _np.asarray(D, dtype=float)
-        return D**(self.s - 1) * _np.exp(-self.s * D / self.D_mean)
+        s = self.s
+        D_mode = self.D_mean * (s - 1) / s if s > 1 else self.D_mean
+        log_pdf = (s - 1) * _np.log(D) - s * D / self.D_mean
+        log_pdf -= (s - 1) * _np.log(D_mode) - s * D_mode / self.D_mean
+        return _np.exp(log_pdf)
 
     def discretize(self, n_bins=200, n_std=6.0):
         """Auto-generate a (D_grid, weights) tabulation for the Mie-coefficient loop."""

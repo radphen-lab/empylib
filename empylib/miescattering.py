@@ -7,7 +7,7 @@ Created on Mon Nov 22 23:38:11 2021
 import numpy as _np
 from numpy import pi as _pi, exp as _exp, conj as _conj, imag as _imag, real as _real
 from numpy.polynomial.legendre import leggauss as _leggauss
-from scipy.special import hankel1e as _hankel1e, jv as _jv, jve as _jve, yv as _yv, eval_legendre as _eval_legendre
+from scipy.special import hankel1e as _hankel1e, jve as _jve, eval_legendre as _eval_legendre
 from scipy.integrate import simpson as _simpson
 from .nklib import emt_brugg as _emt_brugg, emt_multilayer_sphere as _emt_multilayer_sphere
 from .utils import (
@@ -40,19 +40,17 @@ __all__ = (
     'cross_section_ensemble',
 )
 
-
-def _trapz(y, x, axis=-1):
-    """Compat wrapper for NumPy trapezoidal integration across versions."""
-    if hasattr(_np, "trapezoid"):
-        return _np.trapezoid(y, x, axis=axis)
-    return _np.trapz(y, x, axis=axis)
-
 def _safe_complex_divide(num, den, *, floor=1e-300):
     """Complex division with a tiny denominator floor for recurrence pivots."""
     num = _np.asarray(num, dtype=_np.complex128)
     den = _np.asarray(den, dtype=_np.complex128)
     den_safe = _np.where(_np.abs(den) < floor, den + floor, den)
     return num / den_safe
+
+def _default_nmax(y):
+    """Wiscombe/Johnson (1996) truncation order for size parameter(s) y."""
+    y_max = _np.max(_np.abs(y))
+    return int(_np.round(y_max + 4 * y_max ** (1 / 3) + 2))
 
 def _host_size_parameter(wavelength, Nh, R):
     """Return the complex host size parameter k_h R."""
@@ -224,14 +222,39 @@ def _recursive_ab(m, n, Dn, Gn, rho, Dn1, Gn1, rho1):
         return alpha[0], beta[0]
     return alpha, beta
         
+def _coeffs_finite(an, bn):
+    """True if an/bn are non-None, fully finite, and safely summable.
+
+    "Safely summable" means below sqrt(float max)/100, the threshold used
+    throughout this module to guard against overflow in an*conj(bn)-style
+    products.
+    """
+    if an is None or bn is None:
+        return False
+    raw_limit = _np.sqrt(_np.finfo(float).max) / 100.0
+    finite = _np.all(_np.isfinite(an)) and _np.all(_np.isfinite(bn))
+    return bool(
+        finite
+        and _np.nanmax(_np.abs(an)) < raw_limit
+        and _np.nanmax(_np.abs(bn)) < raw_limit
+    )
+
+def _clip_small_negative(q, *extra_refs):
+    """Snap tiny negative numerical noise in q to 0.
+
+    tol = 1e-10 + 1e-8 * max(|q|, |extra_refs...|). Values below -tol are
+    left untouched (treated as genuinely negative, not noise).
+    """
+    q = _np.asarray(q)
+    tol = 1e-10 + 1e-8 * _np.maximum.reduce([_np.abs(q)] + [_np.abs(r) for r in extra_refs])
+    return _np.where((q < 0) & (_np.abs(q) <= tol), 0.0, q)
+
 def _reconstruct_raw_coefficients(alpha, beta, rho_outer, *, raise_on_overflow=False):
     with _np.errstate(over='ignore', divide='ignore', invalid='ignore'):
         an = alpha * _safe_complex_divide(1.0, rho_outer)
         bn = beta * _safe_complex_divide(1.0, rho_outer)
 
-    raw_limit = _np.sqrt(_np.finfo(float).max) / 100.0
-    finite = _np.all(_np.isfinite(an)) and _np.all(_np.isfinite(bn))
-    safely_summable = finite and _np.max(_np.abs(an)) < raw_limit and _np.max(_np.abs(bn)) < raw_limit
+    safely_summable = _coeffs_finite(an, bn)
     if raise_on_overflow and not safely_summable:
         raise FloatingPointError(
             "Raw Mie coefficients overflow for this complex host size parameter; "
@@ -257,7 +280,7 @@ def _get_coated_state(m, x, nmax=None, *, reconstruct_raw=True, raise_on_raw_ove
 
     ka = x[:, -1]
     if nmax is None:
-        nmax = int(_np.round(_np.max(_np.abs(ka)) + 4 * _np.max(_np.abs(ka)) ** (1 / 3) + 2))
+        nmax = _default_nmax(ka)
 
     mix = m * x
     mi1 = _np.concatenate((m, _np.ones((m.shape[0], 1), dtype=_np.complex128)), axis=1)
@@ -298,58 +321,8 @@ def _get_coated_state(m, x, nmax=None, *, reconstruct_raw=True, raise_on_raw_ove
                 state[key] = state[key][0]
     return state
 
-def _get_coated_coefficients(m,x, nmax=None):
-    '''
-    Compute the mie coefficients an and bn using recursion algorithm from
-    Johnson, Appl. Opt. 35, 3286 (1996).
-
-    Parameters
-    ----------
-    m : 1D numpy array
-        normalized refractive index of shell's layers
-    x : 1D numpy array
-        size parameter of shell's layers'
-    nmax : int
-        max number of expansion coefficients.
-
-    Returns
-    -------
-    an : 1D numpy array (size nmax)
-         mie coefficient for M function.
-    bn : 1D numpy array (size nmax)
-        mie coefficient for N function.
-    phi : 1D numpy array (size nmax)
-        1st order Bessel-Ricatti function (evaluated at ka).
-    Dn1 : 1D numpy array (size nmax)
-        Derivative of 1st order Bessel-Ricatti function (evaluated at ka).
-    xi : 1D numpy array (size nmax)
-        3rd order Bessel-Ricatti function (evaluated at ka).
-    Gn1 : 1D numpy array (size nmax)
-        Derivative of 2nd order Bessel-Ricatti function (evaluated at ka).
-
-    '''
-    state = _get_coated_state(m, x, nmax, reconstruct_raw=True, raise_on_raw_overflow=True)
-    ka = _np.atleast_1d(state["ka"])
-    nmax = state["nmax"]
-    n = _np.array(range(1, nmax + 1))
-    nu = n + 0.5
-    ka_2d = ka.reshape(-1, 1)
-    phi = _np.sqrt(0.5 * _pi * ka_2d) * _jv(nu.reshape(1, -1), ka_2d)
-    chi = _np.sqrt(0.5 * _pi * ka_2d) * _yv(nu.reshape(1, -1), ka_2d)
-    xi = phi + 1j * chi
-
-    an = _np.atleast_2d(state["an"])
-    bn = _np.atleast_2d(state["bn"])
-    Dy = _np.atleast_2d(state["Dy"])
-    Gy = _np.atleast_2d(state["Gy"])
-
-    if _np.asarray(x).ndim == 1:
-        return an[0], bn[0], phi[0], Dy[0], xi[0], Gy[0]
-    return an, bn, phi, Dy, xi, Gy
-
 def _cross_section_at_lam(m,x,nmax = None, *, return_state: bool = False):
     '''
-    NEED TO CHECK FLUCTUATION FOR LARGE PARTICLES (F. RAMIREZ 2024)
     Compute mie scattering parameters for a given lambda
     The absorption, scattering, extinction and asymmetry parameter are 
     computed with the formulas for absorbing medium reported in 
@@ -408,8 +381,7 @@ def _cross_section_at_lam(m,x,nmax = None, *, return_state: bool = False):
 
     if nmax is None :
         # define nmax according to B.R Johnson (1996)
-        y_max = _np.max(_np.abs(y))
-        nmax = int(_np.round(y_max + 4*y_max**(1/3) + 2))
+        nmax = _default_nmax(y)
 
     #------------------------------------------------------------------
     # Single batched coefficient call for all wavelengths.
@@ -474,14 +446,7 @@ def _cross_section_at_lam(m,x,nmax = None, *, return_state: bool = False):
     q = _np.sum(en, axis=1)
     Qsca = _real(1/_real(y)*q)
 
-    coeffs_finite = (
-        an is not None
-        and bn is not None
-        and _np.all(_np.isfinite(an))
-        and _np.all(_np.isfinite(bn))
-        and _np.nanmax(_np.abs(an)) < _np.sqrt(_np.finfo(float).max) / 100
-        and _np.nanmax(_np.abs(bn)) < _np.sqrt(_np.finfo(float).max) / 100
-    )
+    coeffs_finite = _coeffs_finite(an, bn)
     near_lossless_host = _np.abs(_imag(y)) <= 1e-7 * _np.maximum(1.0, _np.abs(_real(y)))
     if coeffs_finite and _np.any(near_lossless_host):
         y_real = _real(y[near_lossless_host]).reshape(-1, 1)
@@ -557,9 +522,7 @@ def _cross_section_at_lam(m,x,nmax = None, *, return_state: bool = False):
         Qsca[coeff_mask] = 0.0
         Asym[coeff_mask] = 0.0
 
-    q_tol = 1e-10 + 1e-8 * _np.maximum(_np.abs(Qext), _np.abs(Qsca))
-    Qsca = _np.where((Qsca < 0) & (_np.abs(Qsca) <= q_tol), 0.0, Qsca)
-    Qext = _np.where((Qext < 0) & (_np.abs(Qext) <= q_tol), 0.0, Qext)
+    Qsca, Qext = _clip_small_negative(Qsca, Qext), _clip_small_negative(Qext, Qsca)
     Asym = _np.clip(Asym, -1, +1)
 
     if squeeze_out:
@@ -588,6 +551,15 @@ def _normalize_single_particle_inputs(
     Normalize the single-particle API to the same scalar/array conventions used
     by ``rad_transfer``.
 
+    When ``check_inputs=True``, this delegates all wavelength/Nh/Np/D
+    validation to ``_check_mie_inputs`` and only adds the mono-particle
+    specialization (reject polydisperse ``D``, extract the scalar
+    ``D_shells`` vector). When ``check_inputs=False``, callers are trusted
+    to already provide ``Np`` pre-shaped as ``(n_layers, nlam)`` -- the same
+    contract every other ``check_inputs=False`` path in this module relies
+    on -- while ``D`` may still arrive in any of its raw forms (scalar,
+    1D/2D array, list/tuple).
+
     Returns
     -------
     wavelength : ndarray, shape (nlam,)
@@ -599,35 +571,35 @@ def _normalize_single_particle_inputs(
         One scalar diameter per shell. Polydisperse inputs are rejected here.
     """
     if check_inputs:
-        wavelength, Nh, Np, D, _ = _check_mie_inputs(wavelength, Nh, Np, D)
-
-    wavelength = _np.atleast_1d(_np.asarray(wavelength, dtype=float))
-    if wavelength.ndim != 1 or wavelength.size == 0:
-        raise ValueError("wavelength must be a non-empty 1D array.")
-
-    Nh = _as_1d_array(Nh, "Nh", n_wavelengths=wavelength.size, dtype=complex)
-    Np = _np.asarray(Np, dtype=complex)
-    if Np.ndim == 1:
-        Np = Np.reshape(1, -1)
-    if Np.ndim != 2 or Np.shape[1] != wavelength.size:
-        raise ValueError("Np must resolve to shape (n_layers, len(wavelength)).")
-
-    if _np.isscalar(D):
-        D_layers = [_np.array([float(D)], dtype=float)]
-    elif isinstance(D, _np.ndarray):
-        if D.ndim == 1:
-            D_layers = [_np.asarray(D, dtype=float).ravel()]
-        elif D.ndim == 2:
-            D_layers = [_np.asarray(row, dtype=float).ravel() for row in D]
-        else:
-            raise ValueError("D must be a scalar, a 1D/2D array, or a list of layer diameters.")
-    elif isinstance(D, (list, tuple)):
-        D_layers = [_np.atleast_1d(_np.asarray(layer, dtype=float)).ravel() for layer in D]
+        wavelength, Nh, Np, D_layers, _ = _check_mie_inputs(wavelength, Nh, Np, D)
     else:
-        raise TypeError("D must be a scalar, a 1D/2D array, or a list of layer diameters.")
+        wavelength = _np.atleast_1d(_np.asarray(wavelength, dtype=float))
+        if wavelength.ndim != 1 or wavelength.size == 0:
+            raise ValueError("wavelength must be a non-empty 1D array.")
 
-    if len(D_layers) != Np.shape[0]:
-        raise ValueError("The number of shell diameters must match the number of refractive-index layers.")
+        Nh = _as_1d_array(Nh, "Nh", n_wavelengths=wavelength.size, dtype=complex)
+        Np = _np.asarray(Np, dtype=complex)
+        if Np.ndim == 1:
+            Np = Np.reshape(1, -1)
+        if Np.ndim != 2 or Np.shape[1] != wavelength.size:
+            raise ValueError("Np must resolve to shape (n_layers, len(wavelength)).")
+
+        if _np.isscalar(D):
+            D_layers = [_np.array([float(D)], dtype=float)]
+        elif isinstance(D, _np.ndarray):
+            if D.ndim == 1:
+                D_layers = [_np.asarray(D, dtype=float).ravel()]
+            elif D.ndim == 2:
+                D_layers = [_np.asarray(row, dtype=float).ravel() for row in D]
+            else:
+                raise ValueError("D must be a scalar, a 1D/2D array, or a list of layer diameters.")
+        elif isinstance(D, (list, tuple)):
+            D_layers = [_np.atleast_1d(_np.asarray(layer, dtype=float)).ravel() for layer in D]
+        else:
+            raise TypeError("D must be a scalar, a 1D/2D array, or a list of layer diameters.")
+
+        if len(D_layers) != Np.shape[0]:
+            raise ValueError("The number of shell diameters must match the number of refractive-index layers.")
 
     if any(layer.size != 1 for layer in D_layers):
         raise ValueError(
@@ -700,8 +672,7 @@ def scatter_efficiency(wavelength: _Union[float, _np.ndarray],
 
     # outputs: qabs, qsca, gcos
     qabs = qext - qsca
-    q_tol = 1e-10 + 1e-8 * _np.maximum(_np.abs(qext), _np.abs(qsca))
-    qabs = _np.where((qabs < 0.0) & (_np.abs(qabs) <= q_tol), 0.0, qabs)
+    qabs = _clip_small_negative(qabs, qext, qsca)
     if return_coeffs:
         return qabs, qsca, gcos, _np.asarray(an), _np.asarray(bn)
 
@@ -718,8 +689,7 @@ def _scatter_efficiency_state(wavelength, Nh, Np, D, *, nmax=None):
         m, x, nmax, return_state=True
     )
     qabs = qext - qsca
-    q_tol = 1e-10 + 1e-8 * _np.maximum(_np.abs(qext), _np.abs(qsca))
-    qabs = _np.where((qabs < 0.0) & (_np.abs(qabs) <= q_tol), 0.0, qabs)
+    qabs = _clip_small_negative(qabs, qext, qsca)
     state["qabs"] = qabs
     state["qsca"] = qsca
     state["gcos"] = gcos
@@ -781,9 +751,8 @@ def scatter_coefficients(wavelength: _Union[float, _np.ndarray],
 
     # determine nmax
     if nmax is None :
-        y = _np.max(_np.abs(x[:, -1])) # largest size parameter of outer layer
         # define nmax according to B.R Johnson (1996)
-        nmax = int(_np.round(y + 4*y**(1/3) + 2))
+        nmax = _default_nmax(x[:, -1])
 
     # Coefficients are computed in one batched call over all wavelengths.
     state = _get_coated_state(m, x, nmax, reconstruct_raw=True, raise_on_raw_overflow=True)
@@ -810,22 +779,54 @@ def _pi_tau_1n(theta, nmax):
     """
     mu = _np.cos(theta)  # x = cos(θ)
 
-    _pi  = _np.zeros((nmax, len(mu)))
+    pi_n = _np.zeros((nmax, len(mu)))
     tau = _np.zeros((nmax, len(mu)))
-    
+
     pi_nm2 = 0
-    _pi[0] = _np.ones_like(mu)
-    
+    pi_n[0] = _np.ones_like(mu)
+
     for n in range(1, nmax):
-        tau[n - 1] =            n * mu * _pi[n - 1] - (n + 1) * pi_nm2
-        temp = _pi[n - 1]
-        _pi [n    ] = ((2 * n + 1) * mu * temp        - (n + 1) * pi_nm2) / n
+        tau[n - 1] =            n * mu * pi_n[n - 1] - (n + 1) * pi_nm2
+        temp = pi_n[n - 1]
+        pi_n [n    ] = ((2 * n + 1) * mu * temp        - (n + 1) * pi_nm2) / n
         pi_nm2 = temp
-        
-    return _pi, tau
+
+    return pi_n, tau
+
+def _amplitudes_from_coeffs(theta, an, bn):
+    """
+    Synthesize scattering amplitudes S1(theta), S2(theta) from Mie
+    coefficients an, bn via vectorized angular synthesis.
+
+    Parameters
+    ----------
+    theta : 1D ndarray
+        Scattering angle(s) [rad].
+    an, bn : ndarray, shape (n_wavelengths, nmax)
+        Mie coefficients (or their normalized alpha/beta counterparts).
+
+    Returns
+    -------
+    S1, S2 : ndarray, shape (n_theta, n_wavelengths)
+    """
+    nmax = an.shape[1]
+    pi_n, tau = _pi_tau_1n(theta, nmax)
+
+    n = _np.arange(1, nmax + 1)
+    scale = (2 * n + 1) / ((n + 1) * n)
+
+    # - pi_n/tau have shape (nmax, n_theta)
+    # - an/bn have shape (n_lambda, nmax)
+    # The matrix products below evaluate all theta and wavelength combinations
+    # in one shot, replacing a Python loop over angles.
+    weighted_pi = scale[:, None] * pi_n
+    weighted_tau = scale[:, None] * tau
+    S1 = weighted_pi.T @ an.T + weighted_tau.T @ bn.T
+    S2 = weighted_tau.T @ an.T + weighted_pi.T @ bn.T
+    return S1, S2
 
 @_hide_signature
-def scatter_amplitude(wavelength: _Union[float, _np.ndarray], 
+def scatter_amplitude(wavelength: _Union[float, _np.ndarray],
                       Nh: _Union[float, _np.ndarray], 
                       Np: _Union[float, _np.ndarray, _List[_Union[float, _np.ndarray]]],  
                       D: _Union[float, _List[float]],
@@ -896,24 +897,8 @@ def scatter_amplitude(wavelength: _Union[float, _np.ndarray],
             raise ValueError("an and bn must have the same shape.")
         if an.shape[0] != len(wavelength):
             raise ValueError("an and bn first dimension must match len(wavelength).")
-    nmax = an.shape[1]
 
-    # get _pi and tau angular functions
-    _pi, tau = _pi_tau_1n(theta, nmax)
-
-    # set scale for summation
-    n = _np.arange(1, nmax + 1)
-    scale = (2 * n + 1) / ((n + 1) * n)
-
-    # Vectorized angular synthesis:
-    # - _pi/tau have shape (nmax, n_theta)
-    # - an/bn have shape (n_lambda, nmax)
-    # The matrix products below evaluate all theta and wavelength combinations
-    # in one shot, replacing the previous Python loop over angles.
-    weighted_pi = scale[:, None] * _pi
-    weighted_tau = scale[:, None] * tau
-    S1 = weighted_pi.T @ an.T + weighted_tau.T @ bn.T
-    S2 = weighted_tau.T @ an.T + weighted_pi.T @ bn.T
+    S1, S2 = _amplitudes_from_coeffs(theta, an, bn)
 
     return S1, S2
 
@@ -976,7 +961,7 @@ def scatter_stokes(wavelength: _Union[float, _np.ndarray],
     S11 =1/2*(_np.abs(s1)**2 + _np.abs(s2)**2)
     S12 =1/2*(_np.abs(s1)**2 - _np.abs(s2)**2)
     S33 =1/2*(s2.conj()*s1 + s2*s1.conj())
-    S34 =1*2*(s2.conj()*s1 - s2*s1.conj())
+    S34 =1j/2*(s2.conj()*s1 - s2*s1.conj())
 
     return S11, S12, S33, S34
 
@@ -1052,14 +1037,7 @@ def _phase_function_single(wavelength: _Union[float, _np.ndarray],
         if coeff_a.ndim == 1:
             coeff_a = coeff_a.reshape(1, -1)
             coeff_b = coeff_b.reshape(1, -1)
-        nmax_state = coeff_a.shape[1]
-        _pi_n, tau = _pi_tau_1n(theta, nmax_state)
-        n = _np.arange(1, nmax_state + 1)
-        scale = (2 * n + 1) / ((n + 1) * n)
-        weighted_pi = scale[:, None] * _pi_n
-        weighted_tau = scale[:, None] * tau
-        s1 = weighted_pi.T @ coeff_a.T + weighted_tau.T @ coeff_b.T
-        s2 = weighted_tau.T @ coeff_a.T + weighted_pi.T @ coeff_b.T
+        s1, s2 = _amplitudes_from_coeffs(theta, coeff_a, coeff_b)
         phase_fun = (_np.abs(s1) ** 2 + _np.abs(s2) ** 2) / 2
 
         q_target = _np.asarray(coeff_state.get("qsca", _np.ones(wavelength.size)), dtype=float)
@@ -1167,10 +1145,8 @@ def scatter_from_phase_function(phase_fun,
     Compute Qsca and <cos theta> from a DataFrame whose rows are labeled
     with scattering angles and columns with wavelengths.
 
-    This implementation supports two integration backends over mu = cos(theta):
-    - ``gauss``: Gauss-Legendre quadrature.
-    - ``trapz``: trapezoidal rule in mu-space.
-    Integration method selection is centralized in one internal router.
+    Integration is performed with Simpson's rule over mu = cos(theta), after
+    sorting samples into ascending mu order.
 
     Parameters
     ----------
@@ -1488,7 +1464,14 @@ def phase_function_moments(wavelength: _Union[float, _np.ndarray],
     """
     wavelength_arr = _np.atleast_1d(_np.asarray(wavelength, dtype=float))
     Nh_arr = _np.atleast_1d(_np.asarray(Nh, dtype=complex))
-    D_arr = _np.atleast_1d(_np.asarray(D[-1] if isinstance(D, list) else D, dtype=float))
+    # D=None is valid when size_dist is a closed-form distribution object (the
+    # per-bin diameters are generated later, inside phase_scatt_ensemble, via
+    # size_dist.discretize()). Fall back to the distribution's mean diameter
+    # here so this heuristic doesn't see a bare `None` and produce NaN.
+    D_for_heuristic = D
+    if D_for_heuristic is None and size_dist is not None and hasattr(size_dist, "D_mean"):
+        D_for_heuristic = size_dist.D_mean
+    D_arr = _np.atleast_1d(_np.asarray(D_for_heuristic[-1] if isinstance(D_for_heuristic, list) else D_for_heuristic, dtype=float))
 
     # Quadrature order: at least enough nodes to resolve n_moments Legendre
     # polynomials exactly (4*n_moments), floored further by the existing
@@ -1574,7 +1557,7 @@ def cross_section_ensemble(
         within tolerance; will be renormalized if slightly off.
 
     effective_medium : bool, optional
-        Whether to compute an effective host refractive index via Bruggeman EMT (default: True)
+        Whether to compute an effective host refractive index via Bruggeman EMT (default: False)
 
     dependent_scatt : bool, optional
         Whether to include dependent scattering effects via Percus-Yevick structure factor
@@ -1603,10 +1586,10 @@ def cross_section_ensemble(
     Returns
     -------
     cabs_av : _np.ndarray, shape (nλ,)
-        Size-averaged scattering cross section per particle [µm²].
-    
-    csca_av : _np.ndarray, shape (nλ,)
         Size-averaged absorption cross section per particle [µm²].
+
+    csca_av : _np.ndarray, shape (nλ,)
+        Size-averaged scattering cross section per particle [µm²].
     
     g_av : _np.ndarray, shape (nλ,)
         Size-averaged asymmetry parameter (⟨cosθ⟩).
