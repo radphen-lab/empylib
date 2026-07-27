@@ -16,7 +16,6 @@ from .utils import (
     _check_theta,
     _hide_signature,
     _effective_host,
-    _estimate_theta_npts,
 )
 # structure_factor_PY (and its underlying _mono_percus_yevick /
 # _poly_percus_yevick kernels, plus the closed-form distribution builders:
@@ -69,7 +68,15 @@ def _riccati_psi_scaled(z, nmax):
     return _np.sqrt(0.5 * _pi * z[..., None]) * _jve(nu.reshape((1,) * z.ndim + (-1,)), z[..., None])
 
 def _riccati_xi_over_psi(z, nmax):
-    """Stable inverse Riccati ratio rho_n = xi_n(z) / psi_n(z)."""
+    """Stable inverse Riccati ratio rho_n = xi_n(z) / psi_n(z), via Bessel functions.
+
+    Exact but expensive: for complex ``z`` SciPy routes ``jve``/``hankel1e``
+    through its Fortran backend for complex arguments, which costs ~14 us per
+    element and does not vectorize.  ``_log_RicattiBessel`` therefore obtains
+    rho from a recurrence instead (see ``_rho_from_DnGn``) and calls this only
+    for the few rows where that recurrence's seed is ill-conditioned.  Kept as
+    the reference implementation the recurrence is validated against.
+    """
     z = _np.asarray(z, dtype=_np.complex128)
     n = _np.arange(1, nmax + 1)
     nu = n + 0.5
@@ -81,6 +88,53 @@ def _riccati_xi_over_psi(z, nmax):
         h_scaled = _hankel1e(nu_expanded, z_expanded)
         scale = _np.exp(1j * _real(z_expanded) - 2.0 * _imag(z_expanded))
         rho = h_scaled * scale / j_scaled
+
+    return rho
+
+# Below this magnitude of xi_0/psi_0's denominator the seed of the rho
+# recurrence loses its significant digits; such rows fall back to the exact
+# Bessel evaluation.  On a 161-wavelength sweep this typically selects <10 rows.
+_RHO_SEED_FLOOR = 1e-6
+
+def _rho_from_DnGn(x, Dnx, Gnx, nmax):
+    """rho_n = xi_n(x)/psi_n(x) by upward recurrence on the Wu & Wang ratios.
+
+    Inverting the psi/xi recurrence of Wu & Wang (1991) gives
+
+        rho_n = rho_{n-1} * (D_n + (n+1)/x) / (G_n + (n+1)/x)
+
+    seeded with rho_0 = xi_0/psi_0 = 2/(1 - exp(-2ix)).  Recurring rho (rather
+    than R = psi/xi) walks the *growing* solution, so it stays stable where the
+    R recurrence loses accuracy for absorbing hosts.
+
+    The seed is written as 2*e2/(e2 - 1) with e2 = exp(2ix): for Im(x) >= 0
+    that has |e2| <= 1 and therefore cannot overflow, unlike the algebraically
+    equivalent 2/(1 - exp(-2ix)).  It is ill-conditioned only where e2 -> 1,
+    i.e. real x near a multiple of pi, where psi_0 = sin(x) -> 0; those rows,
+    and any with Im(x) < 0 (outside this seed's assumption), are recomputed
+    with _riccati_xi_over_psi.
+
+    Parameters
+    ----------
+    x : (n_wavelengths, n_shells) complex ndarray
+    Dnx, Gnx : (n_wavelengths, n_shells, >= nmax) complex ndarray
+        Logarithmic derivatives already computed by ``_log_RicattiBessel``.
+    """
+    with _np.errstate(over='ignore', under='ignore', divide='ignore', invalid='ignore'):
+        e2 = _np.exp(2j * x)
+        seed_den = e2 - 1.0
+        rho_prev = 2.0 * e2 / seed_den
+
+        rho = _np.zeros(x.shape + (nmax,), dtype=_np.complex128)
+        for i in range(nmax):
+            shift = (i + 1) / x
+            rho_prev = rho_prev * (Dnx[:, :, i] + shift) / (Gnx[:, :, i] + shift)
+            rho[:, :, i] = rho_prev
+
+    # Exact fallback where the seed carries too few significant digits.
+    bad = (_np.abs(seed_den) < _RHO_SEED_FLOOR) | (_imag(x) < 0.0) | ~_np.isfinite(rho_prev)
+    if _np.any(bad):
+        rho[bad, :] = _riccati_xi_over_psi(x[bad], nmax)
 
     return rho
 
@@ -141,8 +195,10 @@ def _log_RicattiBessel(x,nmax,nmx):
         Gnx[:, :, i] = 1 / ((i + 1) / x - Gnx[:, :, i - 1]) - (i + 1) / x
 
     # Stable inverse ratio rho = xi / psi.  Computing R = psi / xi directly
-    # overflows for absorbing hosts because psi grows as exp(Im(x)).
-    rhonx = _riccati_xi_over_psi(x, nmax)
+    # overflows for absorbing hosts because psi grows as exp(Im(x)); recurring
+    # rho instead reuses the Dn/Gn arrays just built, so no Bessel evaluation
+    # is needed except for the few ill-conditioned rows _rho_from_DnGn detects.
+    rhonx = _rho_from_DnGn(x, Dnx, Gnx, nmax)
 
     Dn = Dnx[:, :, n]
     Gn = Gnx[:, :, n]
@@ -291,7 +347,6 @@ def _get_coated_state(m, x, nmax=None, *, reconstruct_raw=True, raise_on_raw_ove
     Dn1, Gn1, rho1 = _log_RicattiBessel(mi1x, nmax, nmx)
     alpha, beta = _recursive_ab(mi1, nmax, Dn, Gn, rho, Dn1, Gn1, rho1)
 
-    psi_scaled = _riccati_psi_scaled(ka, nmax)
     rho_outer = rho1[:, -1, :]
     Dy = Dn1[:, -1, :]
     Gy = Gn1[:, -1, :]
@@ -302,12 +357,17 @@ def _get_coated_state(m, x, nmax=None, *, reconstruct_raw=True, raise_on_raw_ove
             alpha, beta, rho_outer, raise_on_overflow=raise_on_raw_overflow
         )
 
+    # psi_n(ka) is deliberately NOT computed here.  Its only consumer is the
+    # absorbing-host Johnson Qext/Qsca formulas in _cross_section_at_lam, which
+    # are discarded for a lossless host, and it costs a full scipy Bessel
+    # evaluation over the (n_wavelengths, nmax) grid.  That caller computes it
+    # on demand -- see _psi_scaled_for.
     state = {
         "alpha": alpha,
         "beta": beta,
         "an": an,
         "bn": bn,
-        "psi_scaled": psi_scaled,
+        "psi_scaled": None,
         "Dy": Dy,
         "Gy": Gy,
         "rho_outer": rho_outer,
@@ -391,7 +451,6 @@ def _cross_section_at_lam(m,x,nmax = None, *, return_state: bool = False):
     beta = state["beta"]
     an = state["an"]
     bn = state["bn"]
-    py_scaled = state["psi_scaled"]
     Dy = state["Dy"]
     Gy = state["Gy"]
     nmax = state["nmax"]
@@ -408,43 +467,20 @@ def _cross_section_at_lam(m,x,nmax = None, *, return_state: bool = False):
         alpha[coeff_mask, :] = 0.0
         beta[coeff_mask, :] = 0.0
 
-    # Absorbing-host correction factor from Johnson (1996).  It is combined
-    # with |psi|^2 in scaled form so complex host size parameters with large
-    # Im(y) do not overflow.
-    imy = 2*_imag(y)
-    ft_scaled = _np.full_like(_real(y), 2.0, dtype=float)
-    mask_abs_host = _imag(y) > 1E-8
-    if _np.any(mask_abs_host):
-        imy_sel = imy[mask_abs_host]
-        ft_scaled[mask_abs_host] = _real(
-            imy_sel**2 / (_exp(-imy_sel) + (imy_sel - 1.0))
-        )
-    psi2_scaled = _np.abs(py_scaled) ** 2
-    common = psi2_scaled * ft_scaled.reshape(-1, 1)
-    
     # arranging pre-computing constants
     n = _np.arange(1, nmax + 1, dtype=float).reshape(1, -1)
-    
+
     #------------------------------------------------------------------
-    # Extinction efficiency
+    # Lossless-host efficiencies from the raw an/bn series.
+    #
+    # Evaluated FIRST so we know which rows it covers.  Any row it covers
+    # never reads the Johnson absorbing-host formulas below, which are the
+    # sole consumer of psi_n(y) -- so for an entirely lossless host the
+    # scipy Bessel evaluation of psi is skipped altogether.
     #------------------------------------------------------------------
-    en = (2*n+1)*_imag(common * (- 2j*_imag(Dy)               \
-                       + _conj(alpha)*Dy                      \
-                       - _conj(beta)*_conj(Gy)                \
-                       + alpha*Gy                             \
-                       - beta*_conj(Dy))                      \
-                       /y.reshape(-1, 1))
-    q = _np.sum(en, axis=1)
-    Qext = _real(1/_real(y)*q)
-    
-    #------------------------------------------------------------------
-    # Scattering efficiency
-    #------------------------------------------------------------------
-    en = (2*n+1)*_imag(common * (+ _np.abs(alpha)**2*Gy       \
-                       - _np.abs(beta)**2*_conj(Gy)           \
-                       )/y.reshape(-1, 1))
-    q = _np.sum(en, axis=1)
-    Qsca = _real(1/_real(y)*q)
+    Qext = _np.zeros(_real(y).shape, dtype=float)
+    Qsca = _np.zeros(_real(y).shape, dtype=float)
+    covered = _np.zeros(_real(y).shape, dtype=bool)
 
     coeffs_finite = _coeffs_finite(an, bn)
     near_lossless_host = _np.abs(_imag(y)) <= 1e-7 * _np.maximum(1.0, _np.abs(_real(y)))
@@ -467,6 +503,47 @@ def _cross_section_at_lam(m,x,nmax = None, *, return_state: bool = False):
             rows = lossless_rows[valid_lossless]
             Qext[rows] = qext_lossless[valid_lossless]
             Qsca[rows] = qsca_lossless[valid_lossless]
+            covered[rows] = True
+
+    #------------------------------------------------------------------
+    # Absorbing-host efficiencies, Johnson (1996).  The correction factor is
+    # combined with |psi|^2 in scaled form so complex host size parameters
+    # with large Im(y) do not overflow.  Skipped entirely when the lossless
+    # branch above already covers every row.
+    #------------------------------------------------------------------
+    if not _np.all(covered):
+        imy = 2*_imag(y)
+        ft_scaled = _np.full_like(_real(y), 2.0, dtype=float)
+        mask_abs_host = _imag(y) > 1E-8
+        if _np.any(mask_abs_host):
+            imy_sel = imy[mask_abs_host]
+            ft_scaled[mask_abs_host] = _real(
+                imy_sel**2 / (_exp(-imy_sel) + (imy_sel - 1.0))
+            )
+        py_scaled = _riccati_psi_scaled(y, nmax)
+        state["psi_scaled"] = py_scaled
+        psi2_scaled = _np.abs(py_scaled) ** 2
+        common = psi2_scaled * ft_scaled.reshape(-1, 1)
+
+        # Extinction efficiency
+        en = (2*n+1)*_imag(common * (- 2j*_imag(Dy)               \
+                           + _conj(alpha)*Dy                      \
+                           - _conj(beta)*_conj(Gy)                \
+                           + alpha*Gy                             \
+                           - beta*_conj(Dy))                      \
+                           /y.reshape(-1, 1))
+        q = _np.sum(en, axis=1)
+        qext_johnson = _real(1/_real(y)*q)
+
+        # Scattering efficiency
+        en = (2*n+1)*_imag(common * (+ _np.abs(alpha)**2*Gy       \
+                           - _np.abs(beta)**2*_conj(Gy)           \
+                           )/y.reshape(-1, 1))
+        q = _np.sum(en, axis=1)
+        qsca_johnson = _real(1/_real(y)*q)
+
+        Qext = _np.where(covered, Qext, qext_johnson)
+        Qsca = _np.where(covered, Qsca, qsca_johnson)
     
     #------------------------------------------------------------------
     # Asymmetry parameter
@@ -659,32 +736,29 @@ def scatter_efficiency(wavelength: _Union[float, _np.ndarray],
     gcos : ndarray
         Asymmetry parameter
     '''
-    wavelength, Nh, Np, _, D_shells = _normalize_single_particle_inputs(
-        wavelength, Nh, Np, D, check_inputs=check_inputs
+    qabs, qsca, gcos, state = _scatter_efficiency_state(
+        wavelength, Nh, Np, D, nmax=nmax, check_inputs=check_inputs
     )
-
-    m = (Np / Nh).transpose()
-    R = D_shells / 2.0
-    x = _host_size_parameter(wavelength, Nh, R)
-    
-    # Vectorized path: avoids per-wavelength Python loops.
-    qext, qsca, gcos, _, _, _, an, bn = _cross_section_at_lam(m, x, nmax)
-
-    # outputs: qabs, qsca, gcos
-    qabs = qext - qsca
-    qabs = _clip_small_negative(qabs, qext, qsca)
     if return_coeffs:
-        return qabs, qsca, gcos, _np.asarray(an), _np.asarray(bn)
+        return qabs, qsca, gcos, _np.asarray(state["an"]), _np.asarray(state["bn"])
 
     return qabs, qsca, gcos
 
-def _scatter_efficiency_state(wavelength, Nh, Np, D, *, nmax=None):
+def _scatter_efficiency_state(wavelength, Nh, Np, D, *, nmax=None, check_inputs=False):
+    """Shared implementation behind ``scatter_efficiency``.
+
+    Returns the usual ``(qabs, qsca, gcos)`` plus the full coefficient state,
+    so callers that go on to evaluate a phase function can reuse the Mie
+    coefficients instead of recomputing the series.
+    """
     wavelength, Nh, Np, _, D_shells = _normalize_single_particle_inputs(
-        wavelength, Nh, Np, D, check_inputs=False
+        wavelength, Nh, Np, D, check_inputs=check_inputs
     )
     m = (Np / Nh).transpose()
     R = D_shells / 2.0
     x = _host_size_parameter(wavelength, Nh, R)
+
+    # Vectorized path: avoids per-wavelength Python loops.
     qext, qsca, gcos, _, _, _, an, bn, state = _cross_section_at_lam(
         m, x, nmax, return_state=True
     )
@@ -974,10 +1048,11 @@ def _phase_function_single(wavelength: _Union[float, _np.ndarray],
                             nmax: int = None, 
                             an: _np.ndarray = None,
                             bn: _np.ndarray = None,
+                            mu_weights: _Optional[_np.ndarray] = None,
                             as_ndarray: bool = False,
                             check_inputs: bool = True):
     """
-    Calculate the scattering phase function of a single sphere. The intensity 
+    Calculate the scattering phase function of a single sphere. The intensity
     is normalized such that the integral is equal to qsca.
 
     Adapted from the miepython library: https://github.com/scottprahl/miepython
@@ -1006,7 +1081,18 @@ def _phase_function_single(wavelength: _Union[float, _np.ndarray],
 
         nmax (int, optional): Number of mie scattering coefficients. Default None
 
-        as_ndarray (bool): True if user wants the output as ndarray. Otherwise, 
+        an: either a coefficient-state dict (as produced by
+        ``_scatter_efficiency_state``) to reuse, or a raw ``an`` array. If
+        omitted the state is computed here.
+
+        mu_weights (ndarray, optional): quadrature weights matching ``theta``
+        on mu=cos(theta), ascending. Supply these whenever ``theta`` is not a
+        (near-)uniform grid -- Gauss-Legendre abscissas in particular -- so the
+        qsca renormalization below uses the quadrature that is correct for the
+        grid instead of Simpson's rule, which assumes uniform spacing and is
+        off by ~10% on Legendre abscissas.
+
+        as_ndarray (bool): True if user wants the output as ndarray. Otherwise,
         the output is a pd.DataFrame. Default False
 
     Returns:
@@ -1016,57 +1102,61 @@ def _phase_function_single(wavelength: _Union[float, _np.ndarray],
     wavelength, Nh, Np, _, D_shells = _normalize_single_particle_inputs(
         wavelength, Nh, Np, D, check_inputs=check_inputs
     )
-    
+
     # checks variable theta
     theta = _check_theta(theta)
 
+    # Single code path: always work from the coefficient state.  Computing it
+    # here when no cache was supplied both avoids the overflow-prone raw
+    # an/bn reconstruction that scatter_coefficients() insists on, and keeps
+    # the qsca normalization identical however this function is reached.
     coeff_state = an if isinstance(an, dict) else None
-    if coeff_state is not None:
-        coeff_a = coeff_state.get("an")
-        coeff_b = coeff_state.get("bn")
-        if (
-            coeff_a is None
-            or coeff_b is None
-            or not _np.all(_np.isfinite(coeff_a))
-            or not _np.all(_np.isfinite(coeff_b))
-        ):
-            coeff_a = coeff_state["alpha"]
-            coeff_b = coeff_state["beta"]
-        coeff_a = _np.asarray(coeff_a, dtype=_np.complex128)
-        coeff_b = _np.asarray(coeff_b, dtype=_np.complex128)
-        if coeff_a.ndim == 1:
-            coeff_a = coeff_a.reshape(1, -1)
-            coeff_b = coeff_b.reshape(1, -1)
-        s1, s2 = _amplitudes_from_coeffs(theta, coeff_a, coeff_b)
-        phase_fun = (_np.abs(s1) ** 2 + _np.abs(s2) ** 2) / 2
+    if coeff_state is None:
+        _, _, _, coeff_state = _scatter_efficiency_state(
+            wavelength, Nh, Np, D_shells, nmax=nmax, check_inputs=False
+        )
 
-        q_target = _np.asarray(coeff_state.get("qsca", _np.ones(wavelength.size)), dtype=float)
-        mu = _np.cos(theta)
-        order = _np.argsort(mu)
+    coeff_a = coeff_state.get("an")
+    coeff_b = coeff_state.get("bn")
+    if (
+        coeff_a is None
+        or coeff_b is None
+        or not _np.all(_np.isfinite(coeff_a))
+        or not _np.all(_np.isfinite(coeff_b))
+    ):
+        # Raw coefficients overflowed (large complex host size parameter);
+        # the normalized alpha/beta carry the same angular shape safely.
+        coeff_a = coeff_state["alpha"]
+        coeff_b = coeff_state["beta"]
+    coeff_a = _np.asarray(coeff_a, dtype=_np.complex128)
+    coeff_b = _np.asarray(coeff_b, dtype=_np.complex128)
+    if coeff_a.ndim == 1:
+        coeff_a = coeff_a.reshape(1, -1)
+        coeff_b = coeff_b.reshape(1, -1)
+    s1, s2 = _amplitudes_from_coeffs(theta, coeff_a, coeff_b)
+    phase_fun = (_np.abs(s1) ** 2 + _np.abs(s2) ** 2) / 2
+
+    # Renormalize the angular shape so 2*pi*int(p dmu) == qsca.  This is what
+    # makes the phase function consistent with the Johnson absorbing-host
+    # cross sections, where the plain 1/(pi*(k*D/2)^2) scale factor is wrong.
+    q_target = _np.asarray(coeff_state.get("qsca", _np.ones(wavelength.size)), dtype=float)
+    mu = _np.cos(theta)
+    order = _np.argsort(mu)
+    if mu_weights is None:
         q_shape = 2.0 * _pi * _simpson(phase_fun[order, :], mu[order], axis=0)
-        with _np.errstate(divide='ignore', invalid='ignore'):
-            norm = _np.divide(
-                q_target,
-                q_shape,
-                out=_np.zeros_like(q_target, dtype=float),
-                where=(q_target > 0.0) & _np.isfinite(q_shape) & (q_shape > 0.0),
-            )
-        phase_fun = phase_fun * norm.reshape(1, -1)
     else:
-        # Get scattering amplitude elements S1 and S2
-        s1, s2 = scatter_amplitude(wavelength, Nh, Np, D, 
-                                   theta=theta, 
-                                   nmax=nmax, 
-                                   an=an,
-                                   bn=bn,
-                                   check_inputs = False)
-
-        # Scale factor
-        k_host = 2 * _pi * Nh.real / wavelength
-        scale_factor = _np.pi * (k_host * D_shells[-1] / 2.0) ** 2
-
-        # Compute phase function
-        phase_fun = 1/scale_factor*(_np.abs(s1)**2 + _np.abs(s2)**2)/2
+        w = _np.asarray(mu_weights, dtype=float)
+        if w.shape != mu.shape:
+            raise ValueError("mu_weights must have the same length as theta.")
+        q_shape = 2.0 * _pi * (w[order] @ phase_fun[order, :])
+    with _np.errstate(divide='ignore', invalid='ignore'):
+        norm = _np.divide(
+            q_target,
+            q_shape,
+            out=_np.zeros_like(q_target, dtype=float),
+            where=(q_target > 0.0) & _np.isfinite(q_shape) & (q_shape > 0.0),
+        )
+    phase_fun = phase_fun * norm.reshape(1, -1)
 
     # return phase function as ndarray
     if as_ndarray: return phase_fun
@@ -1252,9 +1342,10 @@ def phase_scatt_ensemble(wavelength: _Union[float, _np.ndarray],
                         D: _Union[float, _np.ndarray, _List[_Union[float, _np.ndarray]]],
                         fv: float = 0.0,
                         *, 
-                        size_dist: _np.ndarray = None, 
-                        nmax: int = None, 
+                        size_dist: _np.ndarray = None,
+                        nmax: int = None,
                         coeff_cache: _Optional[_List[_Tuple[_np.ndarray, _np.ndarray]]] = None,
+                        mu_weights: _Optional[_np.ndarray] = None,
                         as_ndarray: bool = False,
                         check_inputs: bool = True,
                         effective_medium: bool = False,
@@ -1264,56 +1355,68 @@ def phase_scatt_ensemble(wavelength: _Union[float, _np.ndarray],
     The intensity is normalized such that the integral is equal to qsca
 
     Parameters:
-        wavelength : ndarray or float 
-            Wavelengtgh (microns)
-        
-        Nh : ndarray or float 
-            Complex refractive index of host. If ndarray, len(Nh) == len(wavelength)
+    ----------
+    wavelength : ndarray or float 
+        Wavelengtgh (microns)
+    
+    Nh : ndarray or float 
+        Complex refractive index of host. If ndarray, len(Nh) == len(wavelength)
 
-        Np (float, 1darray or list): Complex refractive index of each 
-                                            shell layer. Np.shape[1] == len(D). 
-            Options are:
-            float:   solid sphere and constant refractive index
-            1darray: solid sphere and spectral refractive index (len = wavelength)
-            list:    multilayered sphere (with both constant or spectral refractive indexes)
-        
-        D : float, _np.ndarray or list
-            Diameter of the spheres. Use float for monodisperse, or array for polydisperse.
-            if multilayer sphere, use list of floats (monodisperse) or arrays (polydisperse).
-        
-        fv: float
-            Filling fraction. Defaul 0.0
-        
-        size_dist: ndarray
-            Diameter density distribution. len(size_dist) == len(D)
-        
-        theta : float or ndarray (optional)
-            Scatttering angle (radians). Default None
-        
-        nmax : int (optional)
-            Number of mie scattering coefficients. Default None
+    Np (float, 1darray or list): Complex refractive index of each 
+                                        shell layer. Np.shape[1] == len(D). 
+        Options are:
+        float:   solid sphere and constant refractive index
+        1darray: solid sphere and spectral refractive index (len = wavelength)
+        list:    multilayered sphere (with both constant or spectral refractive indexes)
+    
+    D : float, _np.ndarray or list
+        Diameter of the spheres. Use float for monodisperse, or array for polydisperse.
+        if multilayer sphere, use list of floats (monodisperse) or arrays (polydisperse).
+    
+    fv: float
+        Filling fraction. Defaul 0.0
+    
+    size_dist: ndarray
+        Diameter density distribution. len(size_dist) == len(D)
+    
+    theta : float or ndarray (optional)
+        Scatttering angle (radians). Default None
+    
+    nmax : int (optional)
+        Number of mie scattering coefficients. Default None
 
-        coeff_cache : list[(an, bn)], optional
-            Optional precomputed Mie coefficients per size bin. When provided,
-            phase-function evaluation reuses coefficients and avoids recomputing
-            them inside scatter_amplitude for each bin.
+    coeff_cache : list[(an, bn)], optional
+        Optional precomputed Mie coefficients per size bin. When provided,
+        phase-function evaluation reuses coefficients and avoids recomputing
+        them inside scatter_amplitude for each bin.
+
+    mu_weights : ndarray, optional
+        Quadrature weights on mu=cos(theta) matching `theta`. Required for
+        correctness whenever `theta` is not (near-)uniformly spaced: each size
+        bin is renormalized so 2*pi*int(p dmu) equals that bin's qsca, and on
+        Gauss-Legendre abscissas the default Simpson rule misestimates that
+        integral by ~10%. For a polydisperse ensemble the error does not
+        cancel -- it reweights the bins relative to one another, making the
+        result depend on the number of quadrature nodes. Default None
+        (Simpson, appropriate for uniform theta grids).
+
+    as_ndarray : bool (optional)
+        True if user wants the output as ndarray. Otherwise, the output is a pd.DataFrame. 
+        Default False
+    
+    check_inputs : bool (optional)
+        If True, check mie scattering inputs. Default True
         
-        as_ndarray : bool (optional)
-            True if user wants the output as ndarray. Otherwise, the output is a pd.DataFrame. 
-            Default False
-        
-        check_inputs : bool (optional)
-            If True, check mie scattering inputs. Default True
-            
-        effective_medium : bool (optional)
-            If True, compute the effective refractive index of the host using Bruggeman EMT.
-            Default False
-        
-        dependent_scatt : bool (optional)
-            If True, include structure factor in phase function calculation. Default False
+    effective_medium : bool (optional)
+        If True, compute the effective refractive index of the host using Bruggeman EMT.
+        Default False
+    
+    dependent_scatt : bool (optional)
+        If True, include structure factor in phase function calculation. Default False
 
     Returns:
-        phase_fun: the scattering phase function (as pd.DataFrame or ndarray)
+    ----------
+    phase_fun: the scattering phase function (as pd.DataFrame or ndarray)
     """
     # Input checks
     # Preserve whatever the caller passed for size_dist (ndarray, None, or a
@@ -1357,11 +1460,12 @@ def phase_scatt_ensemble(wavelength: _Union[float, _np.ndarray],
             else:
                 an_bin, bn_bin = coeff_cache[0]
         phase_fun = _phase_function_single(wavelength, Nh, Np, D,
-                                         theta=theta, 
-                                         nmax=nmax, 
+                                         theta=theta,
+                                         nmax=nmax,
                                          an=an_bin,
                                          bn=bn_bin,
-                                         as_ndarray=True, 
+                                         mu_weights=mu_weights,
+                                         as_ndarray=True,
                                          check_inputs=False)
     else:
         Ac = _np.pi*(D[-1]/2)**2  # cross-sectional area of each sphere
@@ -1380,11 +1484,12 @@ def phase_scatt_ensemble(wavelength: _Union[float, _np.ndarray],
                     an_bin, bn_bin = coeff_cache[i]
             # For each diameter, compute phase function
             phase_fun += size_dist[i] * Ac[i] * _phase_function_single(wavelength, Nh, Np, Di,
-                                                                     theta=theta, 
-                                                                     nmax=nmax, 
+                                                                     theta=theta,
+                                                                     nmax=nmax,
                                                                      an=an_bin,
                                                                      bn=bn_bin,
-                                                                     as_ndarray=True, 
+                                                                     mu_weights=mu_weights,
+                                                                     as_ndarray=True,
                                                                      check_inputs=False)
         
         # Normalize by average cross-sectional area
@@ -1412,7 +1517,207 @@ def phase_scatt_ensemble(wavelength: _Union[float, _np.ndarray],
 
     return df_phase_fun
 
-@_hide_signature
+def _gauss_legendre_mu(nquad):
+    """Gauss-Legendre nodes/weights on mu in [-1, 1], sorted ascending in mu."""
+    mu, w = _leggauss(int(nquad))
+    order = _np.argsort(mu)
+    return mu[order], w[order]
+
+# Gauss-Legendre nodes per unit size parameter for the ensemble angular pass.
+#
+# A Mie phase function oscillates ~x times across theta in [0, pi], so the
+# quadrature must resolve O(x) features and the node count has to grow
+# LINEARLY with the size parameter.  The older sqrt(x) heuristic
+# (_estimate_theta_npts) silently loses accuracy as particles grow: measured
+# csca error 3.5e-5 at x~47, 2.4e-2 at x~149 and 3.2e-1 at x~361.  At 3 nodes
+# per unit x the error stays ~2e-5 across that whole range, for roughly twice
+# the angular work of the old heuristic at large x -- which the removal of the
+# second angular pass more than pays for.
+_GL_NODES_PER_SIZE_PARAM = 3.0
+# Guard against a pathological allocation if a caller passes an absurd
+# wavelength/diameter combination.
+_GL_NODES_MAX = 20000
+
+def _quadrature_order(wavelength, Nh, D, size_dist=None, n_moments=None, n_quad=None):
+    """Number of Gauss-Legendre nodes for the ensemble angular integration.
+
+    Floored by 4*n_moments so the quadrature can resolve every requested
+    Legendre polynomial exactly, by the caller's `n_quad` request, and by
+    `_GL_NODES_PER_SIZE_PARAM * x_max` so forward-peaked phase functions at
+    large size parameters stay resolved.
+    """
+    wavelength_arr = _np.atleast_1d(_np.asarray(wavelength, dtype=float))
+    Nh_arr = _np.atleast_1d(_np.asarray(Nh, dtype=complex))
+    # D=None is valid when size_dist is a closed-form distribution object (the
+    # per-bin diameters are generated downstream via size_dist.discretize()).
+    # Fall back to the distribution's mean diameter so this heuristic does not
+    # see a bare `None` and produce NaN.
+    D_for_heuristic = D
+    if D_for_heuristic is None and size_dist is not None and hasattr(size_dist, "D_mean"):
+        D_for_heuristic = size_dist.D_mean
+    D_arr = _np.atleast_1d(_np.asarray(
+        D_for_heuristic[-1] if isinstance(D_for_heuristic, list) else D_for_heuristic,
+        dtype=float))
+
+    x_max = float(_np.max(_np.pi * _np.real(Nh_arr) * _np.max(D_arr) / wavelength_arr))
+    floor = int(_np.ceil(_GL_NODES_PER_SIZE_PARAM * max(x_max, 0.0)))
+    floor = max(floor, 8)
+    if n_moments is not None:
+        floor = max(floor, 4*int(n_moments))
+    if n_quad is not None:
+        floor = max(floor, int(n_quad))
+    return int(min(floor, _GL_NODES_MAX))
+
+def _ensemble_optics(wavelength, Nh, Np, D, fv=0.0, *,
+                     size_dist=None,
+                     dependent_scatt=False,
+                     effective_medium=False,
+                     n_moments=None,
+                     n_quad=None,
+                     nmax=None,
+                     check_inputs=True):
+    """Single-pass optical properties of a sphere ensemble.
+
+    This is the one place that owns the angular grid. It runs the per-size-bin
+    Mie coefficient loop once, evaluates the ensemble phase function once on a
+    single Gauss-Legendre mu grid, and derives everything else from weighted
+    sums against that one grid:
+
+        csca  <- a_0        (2*pi*int p dmu, times the mean geometric area)
+        gcos  <- a_1 / a_0  (<cos theta>)
+        a_l   <- Legendre moments for iadpython's pf_type='MOMENTS'
+
+    Deriving `csca`/`gcos` from the same quadrature that produces the moments
+    replaces a separate uniform-theta Simpson pass, and is markedly more
+    accurate: against a dense reference, Gauss-Legendre reaches ~3e-5 relative
+    error on qsca where 101-point Simpson reaches ~2e-3.
+
+    The angular pass runs only when it is actually needed -- that is, when the
+    structure factor modifies the angular distribution (`dependent_scatt`) or
+    Legendre moments were requested (`n_moments`). Otherwise the direct,
+    numerically stable Mie sums remain the source of truth for csca and gcos.
+
+    Returns
+    -------
+    dict with keys:
+        cabs, csca, gcos : (nlam,) ndarray
+        moments          : (n_moments, nlam) ndarray or None
+        phase            : (n_quad, nlam) ndarray or None -- ensemble phase
+                           function on the Gauss-Legendre grid
+        mu, weights      : (n_quad,) ndarray or None
+        coeff_cache      : list of per-bin Mie coefficient state
+        Nh_eff           : (nlam,) ndarray -- host index actually used
+        wavelength, Np, D, size_dist : the resolved/validated inputs, in the
+                           shapes every `check_inputs=False` path expects
+    """
+    # Preserve the caller's size_dist (ndarray, None, or a closed-form
+    # distribution object) so it can still reach structure_factor_PY's
+    # analytic fast path even after validation resolves a concrete array.
+    orig_size_dist = size_dist
+    if check_inputs:
+        wavelength, Nh, Np, D, size_dist = _check_mie_inputs(wavelength, Nh, Np, D,
+                                                            size_dist=size_dist)
+    elif size_dist is not None and not isinstance(size_dist, _np.ndarray):
+        _w = size_dist.pdf(_np.asarray(D[-1], dtype=float))
+        size_dist = _w / _w.sum()
+
+    if not (0 <= fv < 1):
+        raise ValueError("Filling fraction fv must be in the range [0, 1).")
+
+    if effective_medium and fv > 0:
+        Nh = _effective_host(fv, Np, Nh, D, size_dist,
+                             emt_multilayer_fn=_emt_multilayer_sphere,
+                             emt_brugg_fn=_emt_brugg)
+
+    Ac = _np.pi*(D[-1]/2)**2                                   # geometric area per bin
+    n_bins = 1 if size_dist is None else len(size_dist)
+    p = _np.asarray([1.0]) if size_dist is None else size_dist
+
+    # ---------- per-size-bin Mie coefficients (the expensive loop) ----------
+    cabs_av = _np.zeros_like(wavelength, dtype=float)
+    csca_av = _np.zeros_like(wavelength, dtype=float)
+    gcos_av = _np.zeros_like(wavelength, dtype=float)
+    coeff_cache = []
+    for i in range(n_bins):
+        Di = [d[i] for d in D]
+        qabs, qsca, gcos, state = _scatter_efficiency_state(
+            wavelength, Nh, Np, Di, nmax=nmax
+        )
+        coeff_cache.append(state)
+        cabs_av += p[i] * qabs * Ac[i]
+        csca_av += p[i] * qsca * Ac[i]
+        gcos_av += p[i] * qsca * gcos * Ac[i]      # weighted by scattering
+
+    with _np.errstate(divide='ignore', invalid='ignore'):
+        gcos_av = _np.divide(gcos_av, csca_av,
+                             out=_np.zeros_like(gcos_av),
+                             where=~_np.isclose(csca_av, 0.0))
+
+    result = {
+        "cabs": cabs_av, "csca": csca_av, "gcos": gcos_av,
+        "moments": None, "phase": None, "mu": None, "weights": None,
+        "coeff_cache": coeff_cache, "Nh_eff": Nh,
+        "wavelength": wavelength, "Np": Np, "D": D, "size_dist": size_dist,
+    }
+
+    need_angular = dependent_scatt or (n_moments is not None)
+    if not need_angular:
+        return result
+
+    # ---------- the single angular pass ----------
+    nquad = _quadrature_order(wavelength, Nh, D, size_dist=orig_size_dist,
+                              n_moments=n_moments, n_quad=n_quad)
+    mu, w = _gauss_legendre_mu(nquad)
+
+    # Forward orig_size_dist so a closed-form distribution survives this
+    # handoff and reaches structure_factor_PY's analytic fast path; D is
+    # already concrete here.
+    phase = phase_scatt_ensemble(wavelength, _np.arccos(mu), Nh, Np, D, fv,
+                                 size_dist=orig_size_dist,
+                                 nmax=nmax,
+                                 coeff_cache=coeff_cache,
+                                 mu_weights=w,
+                                 as_ndarray=True,
+                                 effective_medium=False,
+                                 check_inputs=False,
+                                 dependent_scatt=dependent_scatt)
+
+    result["phase"] = phase
+    result["mu"] = mu
+    result["weights"] = w
+
+    if dependent_scatt:
+        # Re-integrate only when the structure factor has modified the angular
+        # distribution. Without it the direct stable Mie sums above remain the
+        # source of truth for Qsca and g.
+        pw = phase * w[:, None]
+        qsca_pf = 2.0 * _pi * pw.sum(axis=0)
+        gcos_pf = 2.0 * _pi * (mu[:, None] * pw).sum(axis=0)
+        with _np.errstate(divide='ignore', invalid='ignore'):
+            gcos_av = _np.divide(gcos_pf, qsca_pf,
+                                 out=_np.zeros_like(gcos_pf),
+                                 where=~_np.isclose(qsca_pf, 0.0))
+        bad = ~_np.isfinite(qsca_pf) | (qsca_pf <= 0.0)
+        if _np.any(bad):
+            qsca_pf = _np.where(bad, 0.0, qsca_pf)
+            gcos_av = _np.where(bad, 0.0, gcos_av)
+        # phase_scatt_ensemble returns the area-weighted mean phase function,
+        # so 2*pi*int(p dmu) is the mean Qsca; scale by the mean area <A>.
+        result["csca"] = qsca_pf * float(_np.sum(p * Ac))
+        result["gcos"] = gcos_av
+
+    if n_moments is not None:
+        P_all = _np.array([_eval_legendre(l, mu) for l in range(int(n_moments))])
+        a_raw = P_all @ (phase * w[:, None])            # (n_moments, nlam)
+        a0 = a_raw[0, :]
+        zero_mask = _np.isclose(a0, 0.0)
+        out = _np.zeros_like(a_raw)
+        if _np.any(~zero_mask):
+            out[:, ~zero_mask] = a_raw[:, ~zero_mask] / a0[~zero_mask]
+        result["moments"] = out
+
+    return result
+
 def phase_function_moments(wavelength: _Union[float, _np.ndarray],
                            Nh: _Union[float, _np.ndarray],
                            Np: _Union[float, _np.ndarray, _List[_Union[float, _np.ndarray]]],
@@ -1420,7 +1725,8 @@ def phase_function_moments(wavelength: _Union[float, _np.ndarray],
                            fv: float = 0.0,
                            *,
                            size_dist: _np.ndarray = None,
-                           n_moments: int = 33,
+                           n_moments: int = None,
+                           quad_pts: int = None,
                            dependent_scatt: bool = False,
                            nmax: int = None,
                            coeff_cache: _Optional[_List[_Tuple[_np.ndarray, _np.ndarray]]] = None,
@@ -1434,77 +1740,77 @@ def phase_function_moments(wavelength: _Union[float, _np.ndarray],
     `pf_type='TABULATED'` path requires.
 
     Parameters:
-        wavelength, Nh, Np, D, fv, size_dist, nmax, effective_medium,
-        check_inputs: as in phase_scatt_ensemble / cross_section_ensemble.
+    ----------
+    n_moments : int, optional
+        Number of Legendre moments a_0..a_{n_moments-1} to return.
+        Provide at most one of `n_moments` or `quad_pts`. If neither is
+        given, defaults to 33 (iadpython's own default of 2*quad_pts+1
+        for quad_pts=16). For a mismatched-refractive-index multilayer
+        stack in iadpython, size generously beyond 2*quad_pts+1 -- see
+        iadpython.Layer's docstring note on pf_type='MOMENTS' -- which
+        is exactly when an explicit `n_moments` (rather than `quad_pts`)
+        is useful: it decouples "how many moments to compute" from
+        "what quad_pts iadpython nominally uses" for that one Sample.
 
-        n_moments : int, optional
-            Number of Legendre moments a_0..a_{n_moments-1} to return.
-            Default 33 (matches iadpython's own default of 2*quad_pts+1 for
-            quad_pts=16). For a mismatched-refractive-index multilayer
-            stack in iadpython, size generously beyond 2*quad_pts+1 -- see
-            iadpython.Layer's docstring note on pf_type='MOMENTS'.
+    quad_pts : int, optional
+        Convenience alternative to `n_moments`: sets `n_moments =
+        2*quad_pts + 1`, matching the count iadpython's `phase_legendre`
+        needs for that many quadrature points. Mutually exclusive with
+        `n_moments`.
 
-        dependent_scatt : bool, optional
-            Whether to include the Percus-Yevick structure factor S(q)
-            (default False).
+    dependent_scatt : bool, optional
+        Whether to include the Percus-Yevick structure factor S(q)
+        (default False).
 
-        coeff_cache : list, optional
-            Per-size-bin Mie coefficient state to reuse (e.g. captured via
-            cross_section_ensemble's out_coeff_cache), avoiding redundant
-            Mie-coefficient computation when the cross sections were
-            already computed separately for the same ensemble.
+    coeff_cache : list, optional
+        Per-size-bin Mie coefficient state to reuse (e.g. captured via
+        cross_section_ensemble's out_coeff_cache), avoiding redundant
+        Mie-coefficient computation when the cross sections were
+        already computed separately for the same ensemble.
 
     Returns:
-        a_raw : np.ndarray, shape (n_moments, n_wavelength)
-            Legendre moments, normalized so a_raw[0, :] == 1 (matching
-            iadpython.legendre_coeffs_from_df's convention exactly). A
-            wavelength column that is identically zero (matched-index /
-            no-scattering limit) stays all-zero rather than raising a
-            division-by-zero.
+    ----------
+    a_raw : np.ndarray, shape (n_moments, n_wavelength)
+        Legendre moments, normalized so a_raw[0, :] == 1 (matching
+        iadpython.legendre_coeffs_from_df's convention exactly). A
+        wavelength column that is identically zero (matched-index /
+        no-scattering limit) stays all-zero rather than raising a
+        division-by-zero.
     """
-    wavelength_arr = _np.atleast_1d(_np.asarray(wavelength, dtype=float))
-    Nh_arr = _np.atleast_1d(_np.asarray(Nh, dtype=complex))
-    # D=None is valid when size_dist is a closed-form distribution object (the
-    # per-bin diameters are generated later, inside phase_scatt_ensemble, via
-    # size_dist.discretize()). Fall back to the distribution's mean diameter
-    # here so this heuristic doesn't see a bare `None` and produce NaN.
-    D_for_heuristic = D
-    if D_for_heuristic is None and size_dist is not None and hasattr(size_dist, "D_mean"):
-        D_for_heuristic = size_dist.D_mean
-    D_arr = _np.atleast_1d(_np.asarray(D_for_heuristic[-1] if isinstance(D_for_heuristic, list) else D_for_heuristic, dtype=float))
+    if n_moments is not None and quad_pts is not None:
+        raise ValueError("Provide at most one of n_moments or quad_pts.")
+    if n_moments is None:
+        n_moments = 2*int(quad_pts) + 1 if quad_pts is not None else 33
 
-    # Quadrature order: at least enough nodes to resolve n_moments Legendre
-    # polynomials exactly (4*n_moments), floored further by the existing
-    # size-parameter-aware heuristic for highly forward-peaked Mie phase
-    # functions at large size parameters. Deliberately NOT capped at a fixed
-    # ceiling (unlike iadpython's own TABULATED heuristic) -- capping below
-    # n_moments would make the quadrature structurally unable to resolve the
-    # requested moments.
-    nquad = _estimate_theta_npts(wavelength_arr, Nh_arr, D_arr,
-                                 bounds=(4*n_moments, max(4*n_moments, 10**6)))
+    # Reusing a supplied coefficient cache means skipping _ensemble_optics'
+    # own Mie loop; go straight to the angular pass in that case.
+    if coeff_cache is not None:
+        nquad = _quadrature_order(wavelength, Nh, D, size_dist=size_dist,
+                                  n_moments=n_moments)
+        mu, w = _gauss_legendre_mu(nquad)
+        phase = phase_scatt_ensemble(wavelength, _np.arccos(mu), Nh, Np, D, fv,
+                                     size_dist=size_dist, nmax=nmax,
+                                     coeff_cache=coeff_cache, mu_weights=w,
+                                     as_ndarray=True,
+                                     check_inputs=check_inputs,
+                                     effective_medium=effective_medium,
+                                     dependent_scatt=dependent_scatt)
+        P_all = _np.array([_eval_legendre(l, mu) for l in range(n_moments)])
+        a_raw = P_all @ (phase * w[:, None])
+        a0 = a_raw[0, :]
+        zero_mask = _np.isclose(a0, 0.0)
+        out = _np.zeros_like(a_raw)
+        if _np.any(~zero_mask):
+            out[:, ~zero_mask] = a_raw[:, ~zero_mask] / a0[~zero_mask]
+        return out
 
-    mu, w = _leggauss(nquad)
-    order = _np.argsort(mu)
-    mu = mu[order]
-    w = w[order]
-    theta = _np.arccos(mu)
-
-    phase = phase_scatt_ensemble(wavelength, theta, Nh, Np, D, fv,
-                                 size_dist=size_dist, nmax=nmax,
-                                 coeff_cache=coeff_cache, as_ndarray=True,
-                                 check_inputs=check_inputs,
-                                 effective_medium=effective_medium,
-                                 dependent_scatt=dependent_scatt)  # (n_theta, nλ)
-
-    P_all = _np.array([_eval_legendre(l, mu) for l in range(n_moments)])  # (n_moments, n_theta)
-    a_raw = P_all @ (phase * w[:, None])  # (n_moments, nλ)
-
-    a0 = a_raw[0, :]
-    zero_mask = _np.isclose(a0, 0.0)
-    out = _np.zeros_like(a_raw)
-    if _np.any(~zero_mask):
-        out[:, ~zero_mask] = a_raw[:, ~zero_mask] / a0[~zero_mask]
-    return out
+    return _ensemble_optics(wavelength, Nh, Np, D, fv,
+                            size_dist=size_dist,
+                            dependent_scatt=dependent_scatt,
+                            effective_medium=effective_medium,
+                            n_moments=n_moments,
+                            nmax=nmax,
+                            check_inputs=check_inputs)["moments"]
 
 @_hide_signature
 def cross_section_ensemble(
@@ -1598,110 +1904,40 @@ def cross_section_ensemble(
         Scattering phase function (if `phase_function=True`), with index=θ° and columns=λ.
         Otherwise, None.
     """
-    # Input checks
-    # Preserve whatever the caller passed for size_dist (ndarray, None, or a
-    # closed-form distribution object from empylib.dense_spheres) so the
-    # ORIGINAL value is still available to forward -- through
-    # phase_scatt_ensemble -- to structure_factor_PY's analytic fast path,
-    # even after check_inputs resolves it to a concrete array below for this
-    # function's own per-bin loop.
-    orig_size_dist = size_dist
-    if check_inputs:
-            wavelength, Nh, Np, D, size_dist = _check_mie_inputs(wavelength, Nh, Np, D,
-                                                                size_dist=size_dist)
-    elif size_dist is not None and not isinstance(size_dist, _np.ndarray):
-        # check_inputs=False path with a distribution object directly: D is
-        # already concrete, so just resolve local weights for this
-        # function's own per-bin loop.
-        _w = size_dist.pdf(_np.asarray(D[-1], dtype=float))
-        size_dist = _w / _w.sum()
+    # The Mie loop, the angular grid and every quantity derived from it are
+    # owned by _ensemble_optics, so csca/gcos come from the same single
+    # Gauss-Legendre pass rather than a separate uniform-theta Simpson pass.
+    optics = _ensemble_optics(wavelength, Nh, Np, D, fv,
+                              size_dist=size_dist,
+                              dependent_scatt=dependent_scatt,
+                              effective_medium=effective_medium,
+                              nmax=nmax,
+                              check_inputs=check_inputs)
 
-    # Use compact Gauss-Legendre angles by default for phase-dependent paths.
-    # Endpoints (0 and pi) are added explicitly so downstream coverage checks
-    # remain robust for phase-function integration.
+    if out_coeff_cache is not None:
+        out_coeff_cache.extend(optics["coeff_cache"])
 
-    # asses if fv is within 0 and 1
-    if not (0 <= fv < 1):
-        raise ValueError("Filling fraction fv must be in the range [0, 1).")
-    
-    # ---------- Effective medium for host (if your convention is to dress Nh) ----------
-    if effective_medium and fv > 0:
-        Nh = _effective_host(fv, Np, Nh, D, size_dist,
-                            emt_multilayer_fn=_emt_multilayer_sphere,
-                            emt_brugg_fn=_emt_brugg,
-                            )
+    cabs_av, csca_av, gcos_av = optics["cabs"], optics["csca"], optics["gcos"]
 
-    Ac = _np.pi*(D[-1]/2)**2                                  # cross-sectional area of each sphere
-    n_bins = 1 if size_dist is None else len(size_dist)       # number of size bins
-    p = _np.asarray([1.0]) if size_dist is None else size_dist  # probability for each size bin
-
-    # ---------- Absorption: average q_abs * area ----------
-    cabs_av = _np.zeros_like(wavelength, dtype=float)
-    csca_av = _np.zeros_like(wavelength, dtype=float)
-    gcos_av = _np.zeros_like(wavelength, dtype=float)
-    # Cache an/bn per size bin so the optional phase-function path can reuse
-    # coefficients instead of recomputing them inside phase_scatt_ensemble.
-    # If the caller supplied out_coeff_cache, fill that same list in-place so
-    # they can reuse these coefficients in a separate subsequent call too.
-    coeff_cache = out_coeff_cache if out_coeff_cache is not None else []
-    for i in range(n_bins):
-        Di = [d[i] for d in D]           # diameter of each layer for current size bin
-
-        # mie scattering efficiencies must return arrays shaped (nλ,)
-        qabs, qsca, gcos, state = _scatter_efficiency_state(
-            wavelength, Nh, Np, Di, nmax=nmax
-        )
-        coeff_cache.append(state)
-
-        # sanitize any tiny negative due to numerics
-        cabs_av += p[i] * qabs * Ac[i]
-        csca_av += p[i] * qsca * Ac[i]
-        gcos_av += p[i] * qsca * gcos * Ac[i]  # weighted by scattering
-
-    with _np.errstate(divide='ignore', invalid='ignore'):
-        gcos_av = _np.divide(
-            gcos_av,
-            csca_av,
-            out=_np.zeros_like(gcos_av),
-            where=~_np.isclose(csca_av, 0.0),
-        )
-
-    if not phase_function and not dependent_scatt:
+    if not phase_function:
         return cabs_av, csca_av, gcos_av, None
-    
-    # create angular grid for phase function integration
-    theta = _np.linspace(0.0, _np.pi, n_theta)  # radians; preserved as radians in phase_scatt_ensemble
 
-    # ---------- Scattering and g: via dense phase function integration ----------
-    # phase_scatt_ensemble returns a DataFrame with index=theta [rad] and columns=lambda.
-    # Forward orig_size_dist (not the concrete array resolved above) so a
-    # closed-form distribution survives this internal handoff and still
-    # reaches structure_factor_PY's analytic fast path inside
-    # phase_scatt_ensemble's own dependent_scatt branch. D is already
-    # concrete here, so phase_scatt_ensemble's own check_inputs=False path
-    # can resolve local per-bin weights from the distribution object for
-    # its phase-function loop.
-    phase_fun_df = phase_scatt_ensemble(wavelength, theta, Nh, Np, D, fv,
-                                        size_dist=orig_size_dist,
+    # A tabulated phase function was explicitly requested. It is returned on a
+    # uniform theta grid of `n_theta` points -- the documented index convention
+    # callers (and scatter_from_phase_function, which needs theta=0/pi endpoint
+    # coverage) rely on. This second angular pass therefore happens only on
+    # explicit request, never on the internal path.
+    theta = _np.linspace(0.0, _np.pi, n_theta)
+    phase_fun_df = phase_scatt_ensemble(optics["wavelength"], theta,
+                                        optics["Nh_eff"], optics["Np"],
+                                        optics["D"], fv,
+                                        size_dist=size_dist,
                                         nmax=nmax,
-                                        coeff_cache=coeff_cache,
+                                        coeff_cache=optics["coeff_cache"],
                                         as_ndarray=False,
                                         effective_medium=False,
                                         check_inputs=False,
                                         dependent_scatt=dependent_scatt)
-    
-    if dependent_scatt:
-        # Re-integrate only when the structure factor has modified the angular
-        # distribution. Without dependent scattering, the direct stable Mie sums
-        # remain the source of truth for Qsca and g.
-        qsca_av, gcos_av = scatter_from_phase_function(phase_fun_df)
-
-        # Convert Q_sca (efficiency) to cross section via weighted area ⟨A⟩ = Σ p_i A_i
-        A_mean = float(_np.sum(p * Ac))
-        csca_av = qsca_av * A_mean
-
-    if not phase_function:
-        return cabs_av, csca_av, gcos_av, None
 
     return cabs_av, csca_av, gcos_av, phase_fun_df
 

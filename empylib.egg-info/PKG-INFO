@@ -1,4 +1,4 @@
-Metadata-Version: 2.4
+Metadata-Version: 2.1
 Name: empylib
 Version: 0.0.2
 Summary: A python library for computational electromagnetics
@@ -13,14 +13,7 @@ Requires-Dist: pyyaml>=5.1
 Requires-Dist: requests>=2.18.0
 Requires-Dist: typing-extensions>=4.0
 Requires-Dist: colour-science>=0.4.6
-Requires-Dist: iadpython @ git+https://github.com/PanxoPanza/iadpython.git
-Dynamic: author
-Dynamic: description
-Dynamic: home-page
-Dynamic: keywords
-Dynamic: license-file
-Dynamic: requires-dist
-Dynamic: summary
+Requires-Dist: iadpython@ git+https://github.com/PanxoPanza/iadpython.git
 
 # empylib
 Standard python library for computational electromagnetics

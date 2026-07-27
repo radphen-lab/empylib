@@ -17,7 +17,6 @@ from .utils import (
     _check_mie_inputs,
     _hide_signature,
     _effective_host,
-    _estimate_theta_npts,
     _prepare_tabulated_phase_fun_for_iad,
 )
 from .nklib import emt_brugg as _emt_brugg, emt_multilayer_sphere as _emt_multilayer_sphere
@@ -212,13 +211,13 @@ def T_beer_lambert(wavelength: _Union[float, _np.ndarray],                      
 def adm_sphere(wavelength: _Union[float, _np.ndarray],                              # wavelengths [µm]
                 N_host: _Union[float, _np.ndarray],                                     # host refractive index
                 N_particle: _Union[float, _np.ndarray, _List[_Union[float, _np.ndarray]]],  # particle refractive index
-                D: _Union[float, _np.ndarray, _List[_Union[float, _np.ndarray]]],   # sphere diameters [µm] 
-                fv: float,                                                          # film volume fraction 
-                thickness: float,                                                       # film thickness [mm]       
+                D: _Union[float, _np.ndarray, _List[_Union[float, _np.ndarray]], None],   # sphere diameters [µm]; may be None when size_dist is a closed-form distribution object
+                fv: float,                                                          # film volume fraction
+                thickness: float,                                                       # film thickness [mm]
                 *,
                 N_above: _Union[float, _np.ndarray] = 1.0,                          # refractive index above
                 N_below: _Union[float, _np.ndarray] = 1.0,                          # refractive index below
-                size_dist: _np.ndarray = None,                                      # number-fraction weights p_i 
+                size_dist=None,                                                     # number-fraction weights p_i, or a closed-form distribution object (empylib.dense_spheres)
                 dependent_scatt = False,                                            # use Perkus-Yevik for dependent scattering
                 effective_medium: bool = False,                                     # whether to compute effective N_host via Bruggeman
                 use_phase_fun: bool = False,                                        # whether to use phase function instead of g
@@ -242,29 +241,39 @@ def adm_sphere(wavelength: _Union[float, _np.ndarray],                          
         1darray: solid sphere and spectral refractive index (len = wavelength)
         list:    multilayered sphere (with both constant or spectral refractive indexes)
     
-    D : float, _np.ndarray or list
+    D : float, _np.ndarray, list, or None
         Diameter of the spheres. Use float for monodisperse, or array for polydisperse.
         if multilayer sphere, use list of floats (monodisperse) or arrays (polydisperse).
-    
+        May be None when `size_dist` is a closed-form distribution object (see below) --
+        the per-bin diameters are then generated automatically from the distribution.
+
     fv : float
         Particle volume fraction in (0, 1). Used only to compute an effective medium N_host via
         `nk.emt_brugg(fv, N_particle, N_host)`.
 
     thickness : float
         Film thickness [mm], ≥ 0.
-            
+
     N_above : float or array-like, optional
         Refractive index above the film. Default is 1.0 (air). If array-like, length must equal len(wavelength).
 
     N_below : float or array-like, optional
         Refractive index below the film. Default is 1.0 (air). If array-like, length must equal len(wavelength).
 
-    size_dist : array-like, shape (n_bins,), optional
-        Number-fraction weights for polydisperse particles. Default is None (monodisper
-        particles). If given, must be 1D array with len(size_dist) == len(D[0]) (if D is list)
-        or len(size_dist) == len(D) (if D is array).
-        The weights must be nonnegative and sum to 1.
-    
+    size_dist : array-like, closed-form distribution object, or None, optional
+        Diameter **number**-density distribution. Either:
+          - a tabulated array of weights, shape (n_bins,), with len(size_dist) ==
+            len(D[0]) (if D is list) or len(D) (if D is array). Must be nonnegative
+            and sum to 1 (renormalized if slightly off).
+          - a closed-form distribution object built by `empylib.dense_spheres`'
+            `schulz`, `truncated_normal`, `inverse_gaussian`, or `exponential` --
+            evaluated analytically. With `dependent_scatt=True`, this also reaches
+            the closed-form Percus-Yevick structure factor directly, bypassing
+            the numerical trapz integration entirely -- useful for repeated
+            evaluation inside optimization/inverse-design loops. Pass `D=None`
+            to let the object auto-generate its own diameter grid.
+        Default is None (monodisperse particles).
+
     dependent_scatt : bool, optional
         Whether to include dependent scattering effects via Percus-Yevick structure factor
         (default: False; not recommended for metallic spheres or high fv)
@@ -281,7 +290,11 @@ def adm_sphere(wavelength: _Union[float, _np.ndarray],                          
         function -- no interpolation), sized for `quad_pts`.
 
     n_theta : int, optional
-        Number of angular points used to sample the phase function and structure factor.
+        Lower bound on the number of Gauss-Legendre nodes used for the single
+        internal angular pass (phase function and structure factor). The actual
+        count is raised as needed to resolve the requested Legendre moments
+        (>= 4*(2*quad_pts+1)) and to cope with forward-peaked phase functions at
+        large size parameters, so this is a floor rather than an exact count.
         Default is 101.
 
     quad_pts : int, optional
@@ -309,6 +322,14 @@ def adm_sphere(wavelength: _Union[float, _np.ndarray],                          
                 'Tlam' : transmittance for Lambertian incidence (if requested)
     '''
     # ---------- coerce arrays & basic checks ----------
+    # Preserve whatever the caller passed for size_dist (ndarray, None, or a
+    # closed-form distribution object from empylib.dense_spheres) so it can
+    # still be forwarded -- after _check_mie_inputs resolves a concrete array
+    # below for this function's own volume/n_tot math -- to cross_section_ensemble
+    # and phase_function_moments, letting a closed-form distribution reach
+    # structure_factor_PY's analytic fast path instead of silently falling
+    # back to the numerical trapz integration.
+    orig_size_dist = size_dist
     wavelength, N_host, N_particle, D, size_dist = _check_mie_inputs(wavelength, N_host, N_particle, D, size_dist=size_dist)
 
     n_wavelengths = wavelength.size
@@ -333,19 +354,19 @@ def adm_sphere(wavelength: _Union[float, _np.ndarray],                          
                                     emt_brugg_fn=_emt_brugg,
                                     )
    
-   #  compute cross sections. Capture the per-size-bin Mie coefficient cache
-   #  (out_coeff_cache) so a separate phase_function_moments call below can
-   #  reuse it (an/bn depend only on size/wavelength, not scattering angle)
-   #  instead of recomputing the Mie coefficient series from scratch.
-    coeff_cache = []
-    cabs, csca, gcos, _ = _mie.cross_section_ensemble(wavelength, N_host_eff, N_particle, D, fv,
-                                                                size_dist=size_dist,
-                                                                n_theta=n_theta,
-                                                                check_inputs=False,
-                                                                effective_medium=False,
-                                                                dependent_scatt=dependent_scatt,
-                                                                phase_function=False,
-                                                                out_coeff_cache=coeff_cache)
+    # ---------- ensemble optics in ONE pass ----------
+    # cabs/csca/gcos and (when requested) the Legendre moments all come from a
+    # single Mie coefficient loop and a single Gauss-Legendre angular pass.
+    # Previously this took two passes over two different angular grids, which
+    # also evaluated the Percus-Yevick structure factor twice per call.
+    optics = _mie._ensemble_optics(wavelength, N_host_eff, N_particle, D, fv,
+                                   size_dist=orig_size_dist,
+                                   dependent_scatt=dependent_scatt,
+                                   effective_medium=False,
+                                   n_moments=(2*int(quad_pts) + 1) if use_phase_fun else None,
+                                   n_quad=n_theta,
+                                   check_inputs=False)
+    cabs, csca, gcos = optics["cabs"], optics["csca"], optics["gcos"]
 
     # ---------- n_tot and coefficients (µm⁻¹) ----------
     # Particle volume (or mean volume if polydisperse)
@@ -359,18 +380,11 @@ def adm_sphere(wavelength: _Union[float, _np.ndarray],                          
     k_abs = n_tot * cabs          # [µm⁻¹]
 
     # ---------- radiative transfer ----------
+    # Both branches read from the single `optics` result above; the only
+    # difference is which angular description is handed to the solver.
     if use_phase_fun:
-        # Legendre moments computed directly via Gauss-Legendre quadrature on
-        # mu=cos(theta) -- no interpolation -- reusing the Mie coefficient
-        # cache captured above.
-        a_l = _mie.phase_function_moments(wavelength, N_host_eff, N_particle, D, fv,
-                                          size_dist=size_dist,
-                                          n_moments=2*int(quad_pts) + 1,
-                                          dependent_scatt=dependent_scatt,
-                                          coeff_cache=coeff_cache,
-                                          check_inputs=False)
         df_results = adm(wavelength, thickness, k_sca, k_abs, N_host=N_host_eff,
-                                       phase_moments=a_l,
+                                       phase_moments=optics["moments"],
                                        N_above=N_above,
                                        N_below=N_below,
                                        quad_pts=quad_pts,

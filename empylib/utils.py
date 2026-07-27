@@ -656,7 +656,16 @@ def _estimate_theta_npts(
     *,
     bounds: _Tuple[int, int] = (32, 128),
 ) -> int:
-    """Heuristic angular resolution from maximum size parameter."""
+    """Heuristic angular resolution from maximum size parameter.
+
+    .. deprecated::
+        No longer used internally. The ``sqrt(x_max)`` growth here is too slow
+        for quadrature over a Mie phase function, which oscillates ~x times
+        across [0, pi]: measured csca error reached 2.4e-2 at x~149 and 3.2e-1
+        at x~361. ``miescattering._quadrature_order`` supersedes it with a node
+        count linear in the size parameter. Retained only for backwards
+        compatibility with external callers.
+    """
     n_min, n_max = bounds
     n_min = int(max(n_min, 8))
     n_max = int(max(n_max, n_min))

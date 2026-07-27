@@ -8,6 +8,7 @@ os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
 import empylib.miescattering as mie
 import empylib.rad_transfer as rt
+import empylib.dense_spheres as ds
 
 
 class SyntheticHGRoundTripTest(unittest.TestCase):
@@ -32,6 +33,36 @@ class SyntheticHGRoundTripTest(unittest.TestCase):
 
         expected = g ** np.arange(n_moments)
         np.testing.assert_allclose(a_l[:, 0], expected, atol=1e-8)
+
+
+class NMomentsQuadPtsConvenienceTest(unittest.TestCase):
+    """n_moments and quad_pts are two ways to say the same thing; quad_pts
+    is sugar for n_moments = 2*quad_pts + 1, and the two are mutually
+    exclusive."""
+
+    def test_quad_pts_matches_explicit_n_moments(self):
+        wavelength = np.array([0.5])
+        D = np.linspace(0.2, 0.6, 4)
+        size_dist = np.ones_like(D)
+
+        a_l_quad_pts = mie.phase_function_moments(
+            wavelength, 1.33, 1.5 + 0.001j, D, fv=0.1, size_dist=size_dist, quad_pts=8,
+        )
+        a_l_n_moments = mie.phase_function_moments(
+            wavelength, 1.33, 1.5 + 0.001j, D, fv=0.1, size_dist=size_dist, n_moments=17,
+        )
+        self.assertEqual(a_l_quad_pts.shape[0], 17)
+        np.testing.assert_allclose(a_l_quad_pts, a_l_n_moments, rtol=1e-8)
+
+    def test_both_given_raises(self):
+        with self.assertRaises(ValueError):
+            mie.phase_function_moments(
+                np.array([0.5]), 1.33, 1.5, 0.3, fv=0.0, n_moments=17, quad_pts=8,
+            )
+
+    def test_neither_given_defaults_to_33(self):
+        a_l = mie.phase_function_moments(np.array([0.5]), 1.33, 1.5, 0.3, fv=0.0)
+        self.assertEqual(a_l.shape[0], 33)
 
 
 class MieConvergenceTest(unittest.TestCase):
@@ -248,6 +279,40 @@ class AdmSphereMomentsPathTest(unittest.TestCase):
         np.testing.assert_allclose(
             df_moments["Rtot"].values, df_gcos["Rtot"].values, atol=0.05
         )
+
+
+class AdmSphereClosedFormDistributionTest(unittest.TestCase):
+    """adm_sphere must preserve a closed-form distribution object (rather
+    than the concrete array _check_mie_inputs resolves it to internally)
+    all the way down to structure_factor_PY's analytic fast path -- not
+    silently degrade to the numerical trapz integration."""
+
+    def test_reaches_analytic_py_path_with_D_none(self):
+        wavelength = np.linspace(0.4, 0.8, 3)
+        dist = ds.schulz(D_mean=0.3, s=5)
+
+        with mock.patch.object(ds, "_poly_percus_yevick", wraps=ds._poly_percus_yevick) as spy:
+            df = rt.adm_sphere(
+                wavelength, N_host=1.33, N_particle=1.5 + 0.001j, D=None, fv=0.05,
+                thickness=1.0, size_dist=dist, dependent_scatt=True,
+                use_phase_fun=True, quad_pts=16,
+            )
+            spy.assert_not_called()
+        self.assertTrue(np.all(np.isfinite(df.values)))
+
+    def test_tabulated_array_still_works(self):
+        """Regression guard: the pre-existing tabulated-array path must be
+        unaffected by the orig_size_dist preservation added for closed-form
+        distributions."""
+        wavelength = np.linspace(0.4, 0.8, 3)
+        D = np.linspace(0.2, 0.4, 5)
+        size_dist = np.ones_like(D)
+        df = rt.adm_sphere(
+            wavelength, N_host=1.33, N_particle=1.5 + 0.001j, D=D, fv=0.05,
+            thickness=1.0, size_dist=size_dist, dependent_scatt=True,
+            use_phase_fun=True, quad_pts=16,
+        )
+        self.assertTrue(np.all(np.isfinite(df.values)))
 
 
 if __name__ == "__main__":

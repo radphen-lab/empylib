@@ -5,6 +5,47 @@ Change Log
 ----------------------------
 - First Release
 
+0.0.3 (22/07/2026)
+----------------------------
+Accuracy
+- cross_section_ensemble/adm_sphere: csca and gcos under dependent_scatt=True are
+  now integrated on a Gauss-Legendre grid whose node count scales linearly with
+  the size parameter, instead of Simpson's rule on 101 uniform theta points.
+  The previous scheme lost accuracy as particles grew -- measured csca error
+  against a converged reference was 4.4e-3 at x~47, 2.44 at x~149 and 12.8 at
+  x~361 (i.e. >1000% for micron-scale particles in the visible); the asymmetry
+  parameter g was off by 0.80 absolute at x~361. It is now ~6e-5 across that
+  whole range. Results for large particles with dependent scattering will change
+  substantially, toward the correct values.
+- _phase_function_single: the per-size-bin qsca renormalization now accepts
+  quadrature weights (mu_weights). Simpson's rule was being applied to
+  Gauss-Legendre abscissas, a ~10% error that, for a polydisperse ensemble,
+  reweighted the size bins against one another.
+
+Performance
+- Riccati-Bessel rho = xi/psi is obtained from a recurrence over the Dn/Gn
+  arrays instead of scipy's complex-argument Bessel backend, with an exact
+  fallback only where the seed is ill-conditioned (real x near k*pi). ~30x
+  faster on that step; agreement with the Bessel reference is 1e-13..1e-9.
+- psi_n(y) is no longer computed for lossless hosts, where its only consumer
+  (the Johnson absorbing-host Qext/Qsca formulas) is discarded anyway.
+- adm_sphere now makes a single pass over the ensemble phase function instead
+  of two on two different angular grids, halving the per-call evaluations of
+  the phase function and the Percus-Yevick structure factor. Net effect on a
+  representative UV-vis fit (6 thicknesses x 100 wavelengths x 16 size bins):
+  4.03 s -> 2.49 s per residual.
+
+Internal
+- New miescattering._ensemble_optics owns the Mie coefficient loop and the one
+  angular grid; cross_section_ensemble, phase_function_moments and
+  phase_scatt_ensemble are thin wrappers over it.
+- scatter_efficiency and _scatter_efficiency_state share one implementation;
+  _phase_function_single has a single code path (via the coefficient state),
+  removing an overflow-prone fallback that raised FloatingPointError for large
+  complex host size parameters.
+- utils._estimate_theta_npts is deprecated (superseded by
+  miescattering._quadrature_order) and no longer used internally.
+
 0.0.2 (27/03/2026)
 ----------------------------
 - Hardened module API visibility by adding explicit __all__ exports across empylib modules.

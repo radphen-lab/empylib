@@ -165,12 +165,12 @@ def _poly_percus_yevick(fv, qq, D, nD):
     # if fv > 0.5, compute structure factor for voids
     # "complementary PY hard-sphere approach" -- approximate, see docstring.
     if fv > 0.5:
-        _warnings.warn(
-            f"fv={fv:.3f} > 0.5 uses the approximate complementary-PY "
-            "(matter/void Babinet) treatment; accuracy degrades beyond "
-            "fv~0.5 (Botet et al. 2020).",
-            UserWarning,
-        )
+        # _warnings.warn(
+        #     f"fv={fv:.3f} > 0.5 uses the approximate complementary-PY "
+        #     "(matter/void Babinet) treatment; accuracy degrades beyond "
+        #     "fv~0.5 (Botet et al. 2020).",
+        #     UserWarning,
+        # )
         R = (1 - fv)/fv*R
         fv = 1 - fv
 

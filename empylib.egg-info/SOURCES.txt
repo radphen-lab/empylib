@@ -6,6 +6,7 @@ empylib/__init__.py
 empylib/__init__.pyi
 empylib/color_system.py
 empylib/color_system.pyi
+empylib/dense_spheres.py
 empylib/miescattering.py
 empylib/miescattering.pyi
 empylib/nklib.py
@@ -61,3 +62,8 @@ empylib/spectra_data/CIE_lum.txt
 empylib/spectra_data/T_atmosphere.txt
 empylib/spectra_data/__init__.py
 empylib/spectra_data/cie-cmf.txt
+tests/test_nklib_fit_to_oscillator.py
+tests/test_percus_yevick_validation.py
+tests/test_phase_function_moments.py
+tests/test_rad_transfer_sanity.py
+tests/test_scatter_amplitude_stokes.py
