@@ -1,1 +1,7 @@
-global -include *.txt *.py
+include README.md
+include CHANGELOG.txt
+include LICENCE.txt
+include setup.py
+include pyproject.toml
+include empylib/py.typed
+recursive-include empylib *.pyi *.nk *.txt *.xls *.csv

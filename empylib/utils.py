@@ -21,6 +21,12 @@ hbar = 1.0545718E-34            # J*s (plank's constan)
 speed_of_light = 299792458      # m/s (speed of light)
 kBoltzmann = 1.38064852E-23     # J/K (Boltzman constant)
 
+def _trapezoid(y, x=None, axis=-1):
+    """Integrate with the NumPy trapezoidal rule across supported versions."""
+    if hasattr(_np, 'trapezoid'):
+        return _np.trapezoid(y, x=x, axis=axis)
+    return _np.trapz(y, x=x, axis=axis)
+
 def _as_1d_array(x, name, n_wavelengths=None, dtype=None):
     """Convert scalar/1D array-like input to a 1D ndarray.
 

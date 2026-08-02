@@ -13,7 +13,7 @@ from scipy.optimize import least_squares as _least_squares
 from typing import Callable as _Callable # used to check callable variables
 from pathlib import Path as _Path
 # import refidx as ri
-from .utils import convert_units as _convert_units, _check_mie_inputs, _warn_extrapolation, _as_1d_array
+from .utils import convert_units as _convert_units, _check_mie_inputs, _warn_extrapolation, _as_1d_array, _trapezoid
 from typing import List as _List, Union as _Union
 import yaml as _yaml
 import requests as _requests
@@ -154,7 +154,7 @@ def get_nkfile(wavelength, MaterialName=None, get_from_local_path = False, lam_u
     assert file_path.exists(), 'File not found'
     
     # read data as dataframe
-    nk_df = _pd.read_csv(file_path, comment='#', sep='\s+', header=None, index_col=0)
+    nk_df = _pd.read_csv(file_path, comment='#', sep=r'\s+', header=None, index_col=0)
     
     # check if has n and k data
     assert nk_df.shape[1] == 2, 'wrong file format'
@@ -421,7 +421,7 @@ def gaussian(wavelength, A,Br,E0):
     integrand = _np.zeros_like(denom, dtype=float)
     _np.divide(num, denom, out=integrand, where=safe)
 
-    eps_re = (2.0 / _np.pi) * _np.trapz(integrand, x=xi, axis=0)
+    eps_re = (2.0 / _np.pi) * _trapezoid(integrand, x=xi, axis=0)
 
     eps = eps_re + 1j * eps_im
     n_complex = _np.sqrt(eps)
@@ -506,7 +506,7 @@ def tauc_lorentz(wavelength, A,C,E0,Eg):
         integrand = _np.zeros_like(denom, dtype=float)
         _np.divide(num, denom, out=integrand, where=safe)
 
-        eps_re = (2.0 / _np.pi) * _np.trapz(integrand, x=xi, axis=0)
+        eps_re = (2.0 / _np.pi) * _trapezoid(integrand, x=xi, axis=0)
 
     eps = eps_re + 1j * eps_im
     n_complex = _np.sqrt(eps)
@@ -2052,8 +2052,8 @@ def emt_brugg(fv_1,nk_1,nk_2):
     eps_1, eps_2 = nk_1**2, nk_2**2 # convert refractive index to dielectric constants
     
     # check if eps_1 or eps_2 are scalar and convert both to 1D ndarray
-    eps_1 = _as_1d_array(eps_1, name = "eps_1")
-    eps_2 = _as_1d_array(eps_2, name = "eps_2")
+    eps_1 = _as_1d_array(eps_1, name = "eps_1").reshape(-1)
+    eps_2 = _as_1d_array(eps_2, name = "eps_2").reshape(-1)
 
     # eps_1 is scalar, create a constant array of len(eps_2)
     if len(eps_1) == 1 and len(eps_2) > 1:
@@ -2071,11 +2071,11 @@ def emt_brugg(fv_1,nk_1,nk_2):
     eps_m = 1/4.*((3*fv_1 - 1)*eps_1 + (3*fv_2 - 1)*eps_2                           \
             - _np.sqrt(((3*fv_1 - 1)*eps_1 + (3*fv_2 - 1)*eps_2)**2 + 8*eps_1*eps_2))
     
-    for i in range(len(eps_m)):
-        if eps_m[i].imag < 0  or (eps_m[i].imag < 1E-10 and eps_m[i].real < 0):
-            eps_m[i] =  eps_m[i] + \
-                1/2*_np.sqrt(((3*fv_1 - 1)*eps_1[i] + (3*fv_2 - 1)*eps_2[i])**2 \
-                + 8*eps_1[i]*eps_2[i]) 
+    correction = 1/2 * _np.sqrt(
+        ((3*fv_1 - 1)*eps_1 + (3*fv_2 - 1)*eps_2)**2 + 8*eps_1*eps_2
+    )
+    use_other_root = (eps_m.imag < 0) | ((eps_m.imag < 1E-10) & (eps_m.real < 0))
+    eps_m = _np.where(use_other_root, eps_m + correction, eps_m)
     
     # if eps_1 and eps_2 were scalar, return a single scalar value
     if len(eps_m) == 1: return _np.sqrt(eps_m[0])
@@ -2127,7 +2127,7 @@ def eps_real_kkr(wavelength, eps_imag, eps_inf = 0, int_range = (0, _np.inf), cs
     
         def integration_element(w_r):
             factor = - w_i / (w_i**2 - w_r**2 + cshift) # integration domains are swaped, so a "-"" sign is added
-            total = _np.trapz(eps_imag * factor, x=w_i)
+            total = _trapezoid(eps_imag * factor, x=w_i)
             return eps_inf + (2/_np.pi)*total
     else:
         raise TypeError('Unknown type for eps_imag')

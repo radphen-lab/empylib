@@ -4,6 +4,7 @@ __description__: str
 __url__: str
 __author__: str
 __credits__: str
+__license__: str
 __build__: int
 __copyright__: str
 

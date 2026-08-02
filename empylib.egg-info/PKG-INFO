@@ -1,10 +1,24 @@
-Metadata-Version: 2.1
+Metadata-Version: 2.4
 Name: empylib
-Version: 0.0.2
-Summary: A python library for computational electromagnetics
-Home-page: https://github.com/PanxoPanza/empylib
+Version: 0.1.0
+Summary: A Python library for computational electromagnetics
+Home-page: https://github.com/radphen-lab/empylib
 Author: Francisco V. Ramirez-Cuevas
-Keywords: electromagnetism
+License: MIT
+Project-URL: Source, https://github.com/radphen-lab/empylib
+Project-URL: Changelog, https://github.com/radphen-lab/empylib/blob/master/CHANGELOG.txt
+Keywords: computational electromagnetics mie scattering radiative transfer optics
+Classifier: Development Status :: 4 - Beta
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3 :: Only
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Topic :: Scientific/Engineering :: Physics
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
 License-File: LICENCE.txt
 Requires-Dist: numpy>=1.15.0
 Requires-Dist: pandas>=0.24.0
@@ -13,7 +27,55 @@ Requires-Dist: pyyaml>=5.1
 Requires-Dist: requests>=2.18.0
 Requires-Dist: typing-extensions>=4.0
 Requires-Dist: colour-science>=0.4.6
-Requires-Dist: iadpython@ git+https://github.com/PanxoPanza/iadpython.git
+Requires-Dist: iadpython @ git+https://github.com/PanxoPanza/iadpython.git
+Dynamic: author
+Dynamic: classifier
+Dynamic: description
+Dynamic: description-content-type
+Dynamic: home-page
+Dynamic: keywords
+Dynamic: license
+Dynamic: license-file
+Dynamic: project-url
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary
 
 # empylib
-Standard python library for computational electromagnetics
+
+`empylib` is a Python library for computational electromagnetics, including
+optical constants, Mie scattering, radiative transfer, wave optics, and
+spectrometry utilities.
+
+## Requirements
+
+- Python 3.10 or later
+
+## Installation
+
+```bash
+python -m pip install empylib
+```
+
+## Example
+
+Load tabulated optical constants bundled with the package:
+
+```python
+import numpy as np
+from empylib.nklib import get_nkfile
+
+wavelength_um = np.linspace(0.40, 2.00, 250)
+refractive_index, source_data = get_nkfile(
+    wavelength_um,
+    "sio2_Palik_Lemarchand2013",
+    get_from_local_path=True,
+)
+```
+
+See the [project repository](https://github.com/radphen-lab/empylib) for
+tutorial notebooks and further examples.
+
+## License
+
+empylib is released under the [MIT License](LICENCE.txt).

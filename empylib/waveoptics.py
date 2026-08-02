@@ -575,7 +575,7 @@ def _TMMcoh(wavelength, aoi, N_layers, thickness, polarization):
             n_b.append(N_layers[-(j + 1)][i])
 
         # Coherent amplitudes for forward and reverse incidence.
-        r_f[i], t_f[i] = multilayer(
+        _, _, r_forward, t_forward = multilayer(
             wavelength[i],
             aoi=aoi[i],
             N_layers=n_f[1:-1],
@@ -583,8 +583,10 @@ def _TMMcoh(wavelength, aoi, N_layers, thickness, polarization):
             N_above=n_f[0],
             N_below=n_f[-1],
             polarization=polarization
-        )[-2:]
-        r_b[i], t_b[i] = multilayer(
+        )
+        r_f[i] = _np.asarray(r_forward).item()
+        t_f[i] = _np.asarray(t_forward).item()
+        _, _, r_reverse, t_reverse = multilayer(
             wavelength[i],
             aoi=th_end[i],
             N_layers=n_b[1:-1],
@@ -592,7 +594,9 @@ def _TMMcoh(wavelength, aoi, N_layers, thickness, polarization):
             N_above=n_b[0],
             N_below=n_b[-1],
             polarization=polarization
-        )[-2:]
+        )
+        r_b[i] = _np.asarray(r_reverse).item()
+        t_b[i] = _np.asarray(t_reverse).item()
 
     T11_coh = 1 / _np.abs(t_f) ** 2
     T12_coh = -_np.abs(r_b) ** 2 / _np.abs(t_f) ** 2

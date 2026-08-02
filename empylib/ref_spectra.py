@@ -12,7 +12,7 @@ Created on Fri Jan 21 16:05:48 2022
 
 import numpy as _np 
 import empylib as _em
-from .utils import _local_to_global_angles
+from .utils import _local_to_global_angles, _trapezoid
 from pathlib import Path as _Path
 from typing import Optional as _Optional, Tuple as _Tuple, Sequence as _Sequence, List as _List, Dict as _Dict, Any as _Any, Union as _Union
 
@@ -421,8 +421,8 @@ def spectral_average(lam_um: _np.ndarray,
     ww  = w[mask]
 
     # Weighted average over wavelength
-    num = _np.trapz(p * ww, lam)
-    den = _np.trapz(ww, lam)
+    num = _trapezoid(p * ww, lam)
+    den = _trapezoid(ww, lam)
 
     if den == 0 or not _np.isfinite(den):
         raise ValueError("Weight integral is zero or invalid; check chosen spectrum and bounds.")

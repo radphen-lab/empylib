@@ -11,7 +11,7 @@ import numpy as _np
 import colour as _clr
 from typing import Any as _Any, Tuple as _Tuple
 
-from .utils import _as_1d_array
+from .utils import _as_1d_array, _trapezoid
 
 __all__ = ('spectrum_to_hex',)
 
@@ -114,9 +114,9 @@ def _emitter_rgb_from_spd(
     S = _np.asarray(sd_S.values, float)     # SPD per nm on that grid
     cm = _np.asarray(cmfs.values, float)    # columns: x̄, ȳ, z̄
 
-    X = _np.trapz(S * cm[:, 0], w)
-    Y = _np.trapz(S * cm[:, 1], w)
-    Z = _np.trapz(S * cm[:, 2], w)
+    X = _trapezoid(S * cm[:, 0], w)
+    Y = _trapezoid(S * cm[:, 1], w)
+    Z = _trapezoid(S * cm[:, 2], w)
     if Y <= 0:
         return _np.zeros(3)
 

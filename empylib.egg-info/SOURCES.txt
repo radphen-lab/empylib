@@ -1,6 +1,8 @@
+CHANGELOG.txt
 LICENCE.txt
 MANIFEST.in
 README.md
+pyproject.toml
 setup.py
 empylib/__init__.py
 empylib/__init__.pyi
@@ -11,6 +13,7 @@ empylib/miescattering.py
 empylib/miescattering.pyi
 empylib/nklib.py
 empylib/nklib.pyi
+empylib/py.typed
 empylib/rad_transfer.py
 empylib/rad_transfer.pyi
 empylib/ref_spectra.py
@@ -28,6 +31,14 @@ empylib.egg-info/SOURCES.txt
 empylib.egg-info/dependency_links.txt
 empylib.egg-info/requires.txt
 empylib.egg-info/top_level.txt
+empylib/IS_reflectance_reference/SRS-02-010.csv
+empylib/IS_reflectance_reference/SRS-50-010.csv
+empylib/IS_reflectance_reference/SRS-75-010.csv
+empylib/IS_reflectance_reference/SRS-99-010.csv
+empylib/IS_reflectance_reference/barium_sulfate.csv
+empylib/IS_reflectance_reference/oceanoptics_std.csv
+empylib/IS_reflectance_reference/silicon_reflectance.csv
+empylib/IS_reflectance_reference/spectralon.csv
 empylib/nk_files/BaSO4_Tong2022.nk
 empylib/nk_files/BiVO4_a-c_Zhao2011.nk
 empylib/nk_files/BiVO4_b_Zhao2011.nk
@@ -56,6 +67,7 @@ empylib/nk_files/cu_Babar2015.nk
 empylib/nk_files/h2o_Hale1973.nk
 empylib/nk_files/si_Schinke2017.nk
 empylib/nk_files/sio2_Palik_Lemarchand2013.nk
+empylib/spectra_data/AM0AM1_5.xls
 empylib/spectra_data/AM15_Direct.txt
 empylib/spectra_data/AM15_Global.txt
 empylib/spectra_data/CIE_lum.txt
@@ -66,4 +78,5 @@ tests/test_nklib_fit_to_oscillator.py
 tests/test_percus_yevick_validation.py
 tests/test_phase_function_moments.py
 tests/test_rad_transfer_sanity.py
+tests/test_riccati_and_quadrature.py
 tests/test_scatter_amplitude_stokes.py
