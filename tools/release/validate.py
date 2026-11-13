@@ -248,6 +248,18 @@ def test(work, selection, constraint):
     regression(work, selection)
 
 
+def copy_test_data(test_dir):
+    """Copy only tracked test resources, preserving paths relative to tests/."""
+    for name in tracked_files():
+        if not name.startswith("tests/data/"):
+            continue
+        origin = ROOT / name
+        if origin.is_file():
+            target = test_dir / Path(name).relative_to("tests")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(origin, target)
+
+
 def regression(work, selection):
     """Run or resume installed checks using an already prepared wheelhouse/venv."""
     python = python_in(work / "installed")
@@ -271,6 +283,7 @@ def regression(work, selection):
     assert tracked, "No tracked regression tests selected"
     for name in tracked:
         shutil.copy2(ROOT / name, test_dir / Path(name).name)
+    copy_test_data(test_dir)
     run(python, "-m", "pytest", "-q", "--import-mode=importlib", test_dir, cwd=outside, env=env)
     finish(work, python, outside, env)
 
