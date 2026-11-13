@@ -1,5 +1,7 @@
 import os
 import unittest
+from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
@@ -38,6 +40,21 @@ CASES = {
     "case21": {"N_above": 1.0, "N_back": 1.0, "nh": 1.5 + 1e-5j, "tfilm_test": 5.0, "Dp": DP, "fv": 0.0},
     "case22": {"N_above": 1.0, "N_back": 1.0, "nh": 1.5 + 1e-5j, "tfilm_test": 0.0, "Dp": DP, "fv": 0.5},
 }
+
+_RI_INFO_FIXTURES = {
+    "https://refractiveindex.info/database/data/main/TiO2/nk/Siefke.yml":
+        Path(__file__).parent / "data" / "refractiveindex" / "main" / "TiO2" / "nk" / "Siefke.yml",
+    "https://refractiveindex.info/database/data/main/SiO2/nk/Franta-25C.yml":
+        Path(__file__).parent / "data" / "refractiveindex" / "main" / "SiO2" / "nk" / "Franta-25C.yml",
+}
+
+
+class _FixtureResponse:
+    def __init__(self, text):
+        self.text = text
+
+    def raise_for_status(self):
+        return None
 
 
 def _outer_above(case):
@@ -185,6 +202,22 @@ class MieZeroContrastTest(unittest.TestCase):
 
 
 class MieAbsorbingHostTest(unittest.TestCase):
+    def setUp(self):
+        def fixture_get(url, *args, **kwargs):
+            try:
+                fixture_path = _RI_INFO_FIXTURES[url]
+            except KeyError as exc:
+                raise AssertionError(
+                    f"Unexpected HTTP request in radiative-transfer tests: {url}"
+                ) from exc
+            return _FixtureResponse(fixture_path.read_text(encoding="utf-8"))
+
+        self._ri_info_get_patch = mock.patch.object(
+            nk._requests, "get", side_effect=fixture_get
+        )
+        self._ri_info_get_patch.start()
+        self.addCleanup(self._ri_info_get_patch.stop)
+
     @staticmethod
     def _max_adjacent_relative_jump(values):
         values = np.asarray(values, dtype=float)

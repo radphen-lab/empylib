@@ -5,3 +5,4 @@ include setup.py
 include pyproject.toml
 include empylib/py.typed
 recursive-include empylib *.nk *.txt *.xls *.csv
+recursive-include tests/data *.yml *.md LICENSE
