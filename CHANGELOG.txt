@@ -1,6 +1,16 @@
 Change Log
 ==============
 
+Unreleased (13/11/2026)
+----------------------------
+Editor support and packaging
+- Removed the ten placeholder .pyi stub files so VS Code/Pylance can use the
+  Python implementations for function signatures, parameter suggestions and
+  docstrings, without stale stubs hiding public functions.
+- Removed .pyi package-data patterns from setup.py and MANIFEST.in.
+- Retained py.typed, explicit __all__ exports and private dependency aliases.
+  Runtime behavior is unchanged; editor suggestions now follow the source API.
+
 0.1.0 (02/08/2026)
 ----------------------------
 First organized release of the substantially revised empylib package.

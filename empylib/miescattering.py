@@ -16,6 +16,8 @@ from .utils import (
     _check_theta,
     _hide_signature,
     _effective_host,
+    _scattering_weights,
+    _scattering_distribution,
 )
 # structure_factor_PY (and its underlying _mono_percus_yevick /
 # _poly_percus_yevick kernels, plus the closed-form distribution builders:
@@ -1429,12 +1431,9 @@ def phase_scatt_ensemble(wavelength: _Union[float, _np.ndarray],
     if check_inputs:
             wavelength, Nh, Np, D, size_dist = _check_mie_inputs(wavelength, Nh, Np, D,
                                                          size_dist=size_dist)
-    elif size_dist is not None and not isinstance(size_dist, _np.ndarray):
-        # check_inputs=False internal-forwarding path (e.g. called from
-        # cross_section_ensemble): D is already concrete at this point, so
-        # just resolve local weights for this function's own per-bin loop.
-        _w = size_dist.pdf(_np.asarray(D[-1], dtype=float))
-        size_dist = _w / _w.sum()
+    else:
+        size_dist = _scattering_weights(D, size_dist)
+    orig_size_dist = _scattering_distribution(D, size_dist, orig_size_dist)
 
     # asses if fv is within 0 and 1
     if not (0 <= fv < 1):
@@ -1617,9 +1616,9 @@ def _ensemble_optics(wavelength, Nh, Np, D, fv=0.0, *,
     if check_inputs:
         wavelength, Nh, Np, D, size_dist = _check_mie_inputs(wavelength, Nh, Np, D,
                                                             size_dist=size_dist)
-    elif size_dist is not None and not isinstance(size_dist, _np.ndarray):
-        _w = size_dist.pdf(_np.asarray(D[-1], dtype=float))
-        size_dist = _w / _w.sum()
+    else:
+        size_dist = _scattering_weights(D, size_dist)
+    orig_size_dist = _scattering_distribution(D, size_dist, orig_size_dist)
 
     if not (0 <= fv < 1):
         raise ValueError("Filling fraction fv must be in the range [0, 1).")
@@ -1658,6 +1657,7 @@ def _ensemble_optics(wavelength, Nh, Np, D, fv=0.0, *,
         "moments": None, "phase": None, "mu": None, "weights": None,
         "coeff_cache": coeff_cache, "Nh_eff": Nh,
         "wavelength": wavelength, "Np": Np, "D": D, "size_dist": size_dist,
+        "scattering_distribution": orig_size_dist,
     }
 
     need_angular = dependent_scatt or (n_moments is not None)
@@ -1931,7 +1931,7 @@ def cross_section_ensemble(
     phase_fun_df = phase_scatt_ensemble(optics["wavelength"], theta,
                                         optics["Nh_eff"], optics["Np"],
                                         optics["D"], fv,
-                                        size_dist=size_dist,
+                                        size_dist=optics["scattering_distribution"],
                                         nmax=nmax,
                                         coeff_cache=optics["coeff_cache"],
                                         as_ndarray=False,
@@ -1940,4 +1940,3 @@ def cross_section_ensemble(
                                         dependent_scatt=dependent_scatt)
 
     return cabs_av, csca_av, gcos_av, phase_fun_df
-

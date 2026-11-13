@@ -290,7 +290,7 @@ def structure_factor_PY(wavelength: _Union[float, _np.ndarray],
     if isinstance(theta, float): theta = _np.array([theta])
 
     orig_size_dist = size_dist
-    is_dist_obj = size_dist is not None and not isinstance(size_dist, _np.ndarray)
+    is_dist_obj = hasattr(size_dist, '_closed_form_S')
 
     if check_inputs:
         if is_dist_obj:

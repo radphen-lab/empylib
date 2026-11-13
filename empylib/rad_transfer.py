@@ -18,6 +18,7 @@ from .utils import (
     _hide_signature,
     _effective_host,
     _prepare_tabulated_phase_fun_for_iad,
+    _scattering_distribution,
 )
 from .nklib import emt_brugg as _emt_brugg, emt_multilayer_sphere as _emt_multilayer_sphere
 from inspect import signature as _signature
@@ -25,6 +26,12 @@ from inspect import signature as _signature
 __all__ = ('T_beer_lambert', 'adm_sphere', 'adm')
 
 _IAD_SUPPORTS_TABULATED_PF = "pf_type" in _signature(_iad.Sample.__init__).parameters
+
+
+def _validate_quad_pts(quad_pts):
+    if isinstance(quad_pts, (bool, _np.bool_)) or not isinstance(quad_pts, (int, _np.integer)) or quad_pts < 2:
+        raise ValueError("quad_pts must be an integer >= 2.")
+    return int(quad_pts)
 
 @_hide_signature
 def T_beer_lambert(wavelength: _Union[float, _np.ndarray],                             # wavelengths [µm]
@@ -68,8 +75,8 @@ def T_beer_lambert(wavelength: _Union[float, _np.ndarray],                      
         if multilayer sphere, use list of floats (monodisperse) or arrays (polydisperse).
     
     fv : float
-        Particle volume fraction in (0, 1). Used only to compute an effective medium N_host via
-        `nk.emt_brugg(fv, N_particle, N_host)`.
+        Particle volume fraction in [0, 1). Sets particle number density and,
+        when requested, effective-medium and dependent-scattering corrections.
 
     thickness : float
         Film thickness [mm], ≥ 0.
@@ -248,8 +255,8 @@ def adm_sphere(wavelength: _Union[float, _np.ndarray],                          
         the per-bin diameters are then generated automatically from the distribution.
 
     fv : float
-        Particle volume fraction in (0, 1). Used only to compute an effective medium N_host via
-        `nk.emt_brugg(fv, N_particle, N_host)`.
+        Particle volume fraction in [0, 1). Sets particle number density and,
+        when requested, effective-medium and dependent-scattering corrections.
 
     thickness : float
         Film thickness [mm], ≥ 0.
@@ -264,7 +271,7 @@ def adm_sphere(wavelength: _Union[float, _np.ndarray],                          
         Diameter **number**-density distribution. Either:
           - a tabulated array of weights, shape (n_bins,), with len(size_dist) ==
             len(D[0]) (if D is list) or len(D) (if D is array). Must be nonnegative
-            and sum to 1 (renormalized if slightly off).
+            with positive sum; normalized internally to sum to one.
           - a closed-form distribution object built by `empylib.dense_spheres`'
             `schulz`, `truncated_normal`, `inverse_gaussian`, or `exponential` --
             evaluated analytically. With `dependent_scatt=True`, this also reaches
@@ -273,6 +280,11 @@ def adm_sphere(wavelength: _Union[float, _np.ndarray],                          
             evaluation inside optimization/inverse-design loops. Pass `D=None`
             to let the object auto-generate its own diameter grid.
         Default is None (monodisperse particles).
+
+        For polydisperse D, None selects uniform number weights. Closed-form
+        PDFs are evaluated on the first-layer diameter grid. If the outer
+        grid differs, dependent scattering uses those same weights on the
+        outer diameters rather than an analytic PDF in a different coordinate.
 
     dependent_scatt : bool, optional
         Whether to include dependent scattering effects via Percus-Yevick structure factor
@@ -298,6 +310,7 @@ def adm_sphere(wavelength: _Union[float, _np.ndarray],                          
         Default is 101.
 
     quad_pts : int, optional
+        Integer >= 2, used for both HG and full-phase-function transport.
         iadpython adding-doubling quadrature points. Also determines how many
         Legendre moments are computed for the `use_phase_fun=True` path
         (2*quad_pts+1). Default is 16.
@@ -322,14 +335,10 @@ def adm_sphere(wavelength: _Union[float, _np.ndarray],                          
                 'Tlam' : transmittance for Lambertian incidence (if requested)
     '''
     # ---------- coerce arrays & basic checks ----------
-    # Preserve whatever the caller passed for size_dist (ndarray, None, or a
-    # closed-form distribution object from empylib.dense_spheres) so it can
-    # still be forwarded -- after _check_mie_inputs resolves a concrete array
-    # below for this function's own volume/n_tot math -- to cross_section_ensemble
-    # and phase_function_moments, letting a closed-form distribution reach
-    # structure_factor_PY's analytic fast path instead of silently falling
-    # back to the numerical trapz integration.
+    # Preserve analytic metadata separately; numeric handoffs must use the
+    # same validated weights as the mean particle volume below.
     orig_size_dist = size_dist
+    quad_pts = _validate_quad_pts(quad_pts)
     wavelength, N_host, N_particle, D, size_dist = _check_mie_inputs(wavelength, N_host, N_particle, D, size_dist=size_dist)
 
     n_wavelengths = wavelength.size
@@ -360,7 +369,7 @@ def adm_sphere(wavelength: _Union[float, _np.ndarray],                          
     # Previously this took two passes over two different angular grids, which
     # also evaluated the Percus-Yevick structure factor twice per call.
     optics = _mie._ensemble_optics(wavelength, N_host_eff, N_particle, D, fv,
-                                   size_dist=orig_size_dist,
+                                   size_dist=_scattering_distribution(D, size_dist, orig_size_dist),
                                    dependent_scatt=dependent_scatt,
                                    effective_medium=False,
                                    n_moments=(2*int(quad_pts) + 1) if use_phase_fun else None,
@@ -393,6 +402,7 @@ def adm_sphere(wavelength: _Union[float, _np.ndarray],                          
     else:
         df_results = adm(wavelength, thickness, k_sca, k_abs, N_host=N_host_eff,
                                        gcos=gcos,
+                                       quad_pts=quad_pts,
                                        N_above=N_above,
                                        N_below=N_below,
                                        cone_incidence=cone_incidence,
@@ -438,7 +448,7 @@ def adm(wavelength, thickness, k_sca, k_abs, N_host,
                  compute these directly from a Mie/Percus-Yevick ensemble.
     --------------------------------------------------------------------------
     - N_above, N_below : scalar or (nλ,) complex refractive indices above/below (defaults=1.0)
-    - quad_pts : quadrature points for IAD when using a tabulated phase function
+    - quad_pts : integer >= 2; IAD quadrature points for every angular description
     - cone_incidence : optional tuple (theta_min, theta_max) in degrees for
                        diffuse cone incidence calculations
 
@@ -456,6 +466,7 @@ def adm(wavelength, thickness, k_sca, k_abs, N_host,
                 'Tlam' : transmittance for Lambertian incidence (if requested)
     """
     # ---------- coerce arrays ----------
+    quad_pts = _validate_quad_pts(quad_pts)
     wavelength = _np.atleast_1d(_np.asarray(wavelength, float))
     k_sca = _np.atleast_1d(_np.asarray(k_sca, float))
     k_abs = _np.atleast_1d(_np.asarray(k_abs, float))

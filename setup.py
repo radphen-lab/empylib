@@ -32,7 +32,6 @@ setup(
     },
     package_data={
         package_name: [
-            '*.pyi',
             'py.typed',
             'nk_files/*.nk',
             'spectra_data/*.txt',

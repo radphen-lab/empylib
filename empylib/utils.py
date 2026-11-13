@@ -5,6 +5,32 @@ from scipy.interpolate import CubicSpline as _CubicSpline
 from typing import Tuple as _Tuple, Dict as _Dict
 import pandas as _pd
 
+
+def _scattering_weights(D, size_dist):
+    """Resolve weights on validated diameter grids, including unchecked calls.
+
+    Closed-form distributions follow _check_mie_inputs' first-layer diameter
+    convention. Never reinterpret that PDF on the outer-layer grid.
+    """
+    n = len(D[0])
+    if size_dist is None:
+        return None if n == 1 else _np.full(n, 1.0 / n)
+    values = size_dist.pdf(D[0]) if hasattr(size_dist, 'pdf') else size_dist
+    weights = _np.asarray(values, dtype=float).ravel()
+    if weights.size != n or not _np.all(_np.isfinite(weights)) or _np.any(weights < 0):
+        raise ValueError("size_dist must contain one finite nonnegative weight per diameter.")
+    total = weights.sum()
+    if not _np.isfinite(total) or total <= 0:
+        raise ValueError("size_dist sum must be positive and finite.")
+    return weights / total
+
+
+def _scattering_distribution(D, weights, original):
+    """Keep analytic PY only when its diameter coordinate is the outer grid."""
+    if hasattr(original, 'pdf') and _np.array_equal(D[0], D[-1]):
+        return original
+    return weights
+
 __all__ = (
     'e_charge',
     'hbar',
