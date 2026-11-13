@@ -1,0 +1,3 @@
+# Explicit NumPy 2 and the SciPy version preceding removal of sph_harm.
+numpy>=2,<2.3
+scipy==1.14.1

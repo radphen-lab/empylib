@@ -1,5 +1,5 @@
 __title__ = 'empylib'
-__version__ = '0.1.0'
+__version__ = '0.2.0'
 __description__ = 'A Python library for computational electromagnetics'
 __url__ = 'https://github.com/radphen-lab/empylib'
 __author__ = 'Francisco V. Ramirez-Cuevas'

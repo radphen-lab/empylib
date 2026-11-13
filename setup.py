@@ -41,7 +41,7 @@ setup(
     },
     license=get_init_val('license'),
     license_files=('LICENCE.txt',),
-    python_requires='>=3.10',
+    python_requires='>=3.10,<3.15',
     classifiers=[
         'Development Status :: 4 - Beta',
         'Operating System :: OS Independent',
@@ -51,18 +51,19 @@ setup(
         'Programming Language :: Python :: 3.11',
         'Programming Language :: Python :: 3.12',
         'Programming Language :: Python :: 3.13',
+        'Programming Language :: Python :: 3.14',
         'Topic :: Scientific/Engineering :: Physics',
     ],
     keywords='computational electromagnetics mie scattering radiative transfer optics',
     install_requires=[
-        'numpy>=1.15.0',     # or >=1.20.0 if you want a more modern floor
-        'pandas>=0.24.0',    # or >=1.0.0 for better support
-        'scipy>=1.1.0',
-        'pyyaml>=5.1',
-        'requests>=2.18.0',
+        'numpy>=1.24',
+        'pandas>=1.5',
+        'scipy>=1.10',
+        'pyyaml>=6',
+        'requests>=2.28',
         'typing-extensions>=4.0',
         'colour-science>=0.4.6',  # for color science utilities
-        'iadpython @ git+https://github.com/PanxoPanza/iadpython.git' # forked iadpython version
+        'radphen-iadpython>=0.7.0,<0.8',
     ],
     packages=find_packages(include=[package_name, package_name + '.*']),
 )

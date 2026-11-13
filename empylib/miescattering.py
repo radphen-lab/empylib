@@ -1145,7 +1145,7 @@ def _phase_function_single(wavelength: _Union[float, _np.ndarray],
     mu = _np.cos(theta)
     order = _np.argsort(mu)
     if mu_weights is None:
-        q_shape = 2.0 * _pi * _simpson(phase_fun[order, :], mu[order], axis=0)
+        q_shape = 2.0 * _pi * _simpson(phase_fun[order, :], x=mu[order], axis=0)
     else:
         w = _np.asarray(mu_weights, dtype=float)
         if w.shape != mu.shape:
@@ -1324,9 +1324,9 @@ def scatter_from_phase_function(phase_fun,
     p_eval = pf.to_numpy(dtype=float, copy=False)
     p_sorted = p_eval[order, :]
 
-    qsca = 2.0 * _np.pi * _simpson(p_sorted, mu_sorted, axis=0)
+    qsca = 2.0 * _np.pi * _simpson(p_sorted, x=mu_sorted, axis=0)
     with _np.errstate(divide='ignore', invalid='ignore'):
-        gcos = (2.0 * _np.pi * _simpson((mu_sorted[:, None] * p_sorted), mu_sorted, axis=0)) / qsca
+        gcos = (2.0 * _np.pi * _simpson((mu_sorted[:, None] * p_sorted), x=mu_sorted, axis=0)) / qsca
     
     # ---- 6) Sanitize bad/zero cases ----
     mask_bad = ~_np.isfinite(qsca) | (qsca <= 0.0)
