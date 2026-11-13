@@ -1,0 +1,120 @@
+name: Distribution and regression validation
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      backend-source-ref:
+        description: Optional exact 40-hex backend commit for prepublication CI only
+        type: string
+        default: ''
+      backend-wheel-url:
+        description: Optional fork release wheel URL (never upstream); requires SHA256
+        type: string
+        default: ''
+      backend-wheel-sha256:
+        description: SHA256 of the exact renamed backend wheel
+        type: string
+        default: ''
+  workflow_call:
+    inputs:
+      backend-source-ref:
+        type: string
+        default: ''
+      backend-wheel-url:
+        type: string
+        default: ''
+      backend-wheel-sha256:
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  artifacts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - run: python -m pip install --upgrade build twine packaging
+      - name: Build clean tracked source, inspect artifacts, rebuild sdist
+        run: python tools/release/validate.py build --work "${{ runner.temp }}/release"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: empylib-release-distributions
+          path: ${{ runner.temp }}/release/dist/*
+          if-no-files-found: error
+
+  regression:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, python: '3.10', selection: full, deps: current}
+          - {os: ubuntu-latest, python: '3.11', selection: full, deps: current}
+          - {os: ubuntu-latest, python: '3.12', selection: full, deps: current}
+          - {os: ubuntu-latest, python: '3.13', selection: full, deps: current}
+          - {os: ubuntu-latest, python: '3.14', selection: full, deps: current}
+          - {os: ubuntu-latest, python: '3.10', selection: full, deps: minimum}
+          - {os: ubuntu-latest, python: '3.11', selection: full, deps: scipy114}
+          - {os: windows-latest, python: '3.10', selection: representative, deps: current}
+          - {os: windows-latest, python: '3.14', selection: representative, deps: current}
+          - {os: macos-latest, python: '3.10', selection: representative, deps: current}
+          - {os: macos-latest, python: '3.14', selection: representative, deps: current}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install --upgrade build twine packaging
+      - name: Build and verify clean artifacts
+        run: python tools/release/validate.py build --work "${{ runner.temp }}/release"
+      - name: Validate mutually exclusive backend override inputs
+        env:
+          BACKEND_SOURCE_REF: ${{ inputs.backend-source-ref || '' }}
+          BACKEND_URL: ${{ inputs.backend-wheel-url || '' }}
+          BACKEND_SHA256: ${{ inputs.backend-wheel-sha256 || '' }}
+        run: >-
+          python -c "import os,re; r=os.environ['BACKEND_SOURCE_REF'];
+          assert not r or re.fullmatch(r'[0-9a-fA-F]{40}',r), 'Backend source ref must be a full 40-hex commit';
+          assert not r or not (os.environ['BACKEND_URL'] or os.environ['BACKEND_SHA256']), 'Backend source and wheel overrides are mutually exclusive'"
+      - name: Check out pinned backend candidate for prepublication CI
+        if: inputs.backend-source-ref != ''
+        uses: actions/checkout@v4
+        with:
+          repository: PanxoPanza/iadpython
+          ref: ${{ inputs.backend-source-ref }}
+          path: backend-source
+          persist-credentials: false
+      - name: Build and validate pinned backend candidate
+        if: inputs.backend-source-ref != ''
+        shell: bash
+        run: |
+          python -m build backend-source --wheel --outdir "${{ runner.temp }}/release/backend"
+          for wheel in "${{ runner.temp }}/release/backend/"*.whl; do
+            python tools/release/validate.py backend-check --wheel "$wheel"
+          done
+      - name: Resolve renamed backend (fails explicitly until published or supplied)
+        if: inputs.backend-source-ref == ''
+        env:
+          BACKEND_URL: ${{ inputs.backend-wheel-url || '' }}
+          BACKEND_SHA256: ${{ inputs.backend-wheel-sha256 || '' }}
+        shell: bash
+        run: >-
+          python tools/release/validate.py backend --work "${{ runner.temp }}/release"
+          --url "$BACKEND_URL" --sha256 "$BACKEND_SHA256"
+      - name: Installed full regression and offline wheel validation
+        shell: bash
+        run: |
+          args=()
+          if [ '${{ matrix.deps }}' = minimum ]; then
+            args=(--constraint tools/release/minimum-constraints.txt)
+          elif [ '${{ matrix.deps }}' = scipy114 ]; then
+            args=(--constraint tools/release/scipy114-constraints.txt)
+          fi
+          python tools/release/validate.py test --work "${{ runner.temp }}/release" --selection '${{ matrix.selection }}' "${args[@]}"

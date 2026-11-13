@@ -9,7 +9,43 @@ Created on Sun Nov  7 17:25:53 2021
 import numpy as _np
 from . import miescattering as _mie
 from . import waveoptics as _wv
-import iadpython as _iad
+_BACKEND_INSTALL_HELP = (
+    'empylib requires radphen-iadpython>=0.7.0,<0.8 with custom phase functions '
+    'and complex boundaries. Install it with '
+    '`python -m pip install --upgrade "radphen-iadpython>=0.7.0,<0.8"`.'
+)
+from importlib import metadata as _metadata
+
+
+def _validate_iad_distribution():
+    """Require the fork and reject distributions that overwrite its module files."""
+    from re import fullmatch
+
+    try:
+        version = _metadata.version("radphen-iadpython")
+    except _metadata.PackageNotFoundError as error:
+        raise ImportError("The radphen-iadpython distribution is not installed. " + _BACKEND_INSTALL_HELP) from error
+    try:
+        _metadata.version("iadpython")
+    except _metadata.PackageNotFoundError:
+        pass
+    else:
+        raise ImportError(
+            "Conflicting iadpython and radphen-iadpython distributions are installed; "
+            "both provide the iadpython module and can overwrite each other's files. "
+            "Use a fresh environment, or repair this environment with "
+            "`python -m pip uninstall iadpython radphen-iadpython` followed by "
+            '`python -m pip install "radphen-iadpython>=0.7.0,<0.8"`.'
+        )
+    if fullmatch(r"0\.7\.\d+(?:\.post\d+)?", version) is None:
+        raise ImportError(f"Unsupported radphen-iadpython distribution version {version!r}. " + _BACKEND_INSTALL_HELP)
+
+
+_validate_iad_distribution()
+try:
+    import iadpython as _iad
+except ImportError as _backend_import_error:
+    raise ImportError(_BACKEND_INSTALL_HELP) from _backend_import_error
 import pandas as _pd
 from typing import Union as _Union, Optional as _Optional, List as _List, Tuple as _Tuple
 from .utils import (
@@ -25,7 +61,29 @@ from inspect import signature as _signature
 
 __all__ = ('T_beer_lambert', 'adm_sphere', 'adm')
 
-_IAD_SUPPORTS_TABULATED_PF = "pf_type" in _signature(_iad.Sample.__init__).parameters
+def _validate_iad_backend(backend):
+    """Reject incompatible solvers before any transport calculation runs."""
+    from re import fullmatch
+
+    version = str(getattr(backend, "__version__", ""))
+    if fullmatch(r"0\.7\.\d+(?:\.post\d+)?", version) is None:
+        raise ImportError(f"Unsupported radphen-iadpython version {version!r}. " + _BACKEND_INSTALL_HELP)
+    sample = getattr(backend, "Sample", None)
+    required_parameters = {
+        "pf_type", "pf_data", "n_sample_boundary", "n_outer_above", "n_outer_below",
+    }
+    required_methods = {"rt_matrices", "UX1_and_UXU", "unscattered_rt", "rt_diffuse_cone"}
+    try:
+        parameters = set(_signature(sample.__init__).parameters)
+    except (AttributeError, TypeError, ValueError):
+        parameters = set()
+    missing = sorted(required_parameters - parameters)
+    missing += sorted(name for name in required_methods if not callable(getattr(sample, name, None)))
+    if missing:
+        raise ImportError("Incompatible radphen-iadpython backend; missing " + ", ".join(missing) + ". " + _BACKEND_INSTALL_HELP)
+
+
+_validate_iad_backend(_iad)
 
 
 def _validate_quad_pts(quad_pts):
@@ -521,31 +579,24 @@ def adm(wavelength, thickness, k_sca, k_abs, N_host,
         if not isinstance(phase_fun, _pd.DataFrame):
             raise TypeError("phase_fun must be a pandas DataFrame with theta-degree index in [0,180].")
 
-        if _IAD_SUPPORTS_TABULATED_PF:
-            # Shared conversion keeps theta->mu tabulation consistent across
-            # all future iadpython call-sites.
-            pf_df = _prepare_tabulated_phase_fun_for_iad(phase_fun, wavelength)
+        # Shared conversion keeps theta->mu tabulation consistent across
+        # all future iadpython call-sites.
+        pf_df = _prepare_tabulated_phase_fun_for_iad(phase_fun, wavelength)
 
-            # Sanitize non-finite phase-function values that can arise from Mie
-            # size-parameter overflow (e.g. large coated-sphere recursion at UV
-            # wavelengths). CubicSpline inside iadpython.redistribution rejects
-            # inf/NaN; replace entire bad wavelength-columns with the isotropic
-            # phase function (p = 1.0, equivalent to g = 0). The optimizer sees a
-            # large residual at those wavelengths and steers away from the
-            # pathological parameters — the same logic as the k_sca/k_abs clamp
-            # applied above.
-            _pf_vals = pf_df.values
-            _bad_cols = ~_np.all(_np.isfinite(_pf_vals), axis=0)
-            if _bad_cols.any():
-                _pf_vals = _pf_vals.copy()
-                _pf_vals[:, _bad_cols] = 1.0   # isotropic fallback (∫p dμ = 2 satisfied)
-                pf_df = _pd.DataFrame(_pf_vals, index=pf_df.index, columns=pf_df.columns)
-        else:
-            # Older iadpython releases only expose Henyey-Greenstein anisotropy.
-            # Collapse the supplied phase function to an equivalent g(λ) so the
-            # public `phase_fun=` entrypoint remains usable in those environments.
-            _, gcos = _mie.scatter_from_phase_function(phase_fun)
-            use_pf = False
+        # Sanitize non-finite phase-function values that can arise from Mie
+        # size-parameter overflow (e.g. large coated-sphere recursion at UV
+        # wavelengths). CubicSpline inside iadpython.redistribution rejects
+        # inf/NaN; replace entire bad wavelength-columns with the isotropic
+        # phase function (p = 1.0, equivalent to g = 0). The optimizer sees a
+        # large residual at those wavelengths and steers away from the
+        # pathological parameters — the same logic as the k_sca/k_abs clamp
+        # applied above.
+        _pf_vals = pf_df.values
+        _bad_cols = ~_np.all(_np.isfinite(_pf_vals), axis=0)
+        if _bad_cols.any():
+            _pf_vals = _pf_vals.copy()
+            _pf_vals[:, _bad_cols] = 1.0   # isotropic fallback (∫p dμ = 2 satisfied)
+            pf_df = _pd.DataFrame(_pf_vals, index=pf_df.index, columns=pf_df.columns)
 
     # ---------- prepare phase function (MOMENTS path) ----------
     if use_moments:

@@ -1,0 +1,55 @@
+name: Publish empylib 0.2.0
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm-version:
+        description: Type 0.2.0 to publish the validated release tag
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  release-gate:
+    # Personal repositories are owner-only. Organization write permissions
+    # authorize manual dispatch; pypi environment reviewers authorize upload.
+    if: github.event.repository.owner.type == 'Organization' || github.actor == github.repository_owner
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Require exact tag, version and publicly released backend
+        env:
+          CONFIRM_VERSION: ${{ inputs.confirm-version }}
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          python -c "import os; assert os.environ['CONFIRM_VERSION'] == '0.2.0'; assert os.environ['RELEASE_REF'] == 'refs/tags/v0.2.0'"
+          python -m pip install packaging
+          python tools/release/validate.py backend --work "${{ runner.temp }}/public-backend"
+
+  validate:
+    needs: release-gate
+    uses: ./.github/workflows/validation.yml
+    # No backend artifact override is accepted for publication: the renamed
+    # backend must already be downloadable as a normal dependency from PyPI.
+
+  publish:
+    needs: [release-gate, validate]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/empylib/0.2.0/
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: empylib-release-distributions
+          path: dist
+      - name: Publish using the configured PyPI Trusted Publisher
+        uses: pypa/gh-action-pypi-publish@release/v1
