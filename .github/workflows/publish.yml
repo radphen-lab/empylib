@@ -34,6 +34,8 @@ jobs:
   validate:
     needs: release-gate
     uses: ./.github/workflows/validation.yml
+    with:
+      require-published-backend: true
     # No backend artifact override is accepted for publication: the renamed
     # backend must already be downloadable as a normal dependency from PyPI.
 

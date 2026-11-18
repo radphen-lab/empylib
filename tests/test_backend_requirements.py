@@ -12,7 +12,7 @@ def test_installed_backend_exposes_required_contract():
     assert rt._iad.__name__ == "iadpython"
 
 
-@pytest.mark.parametrize("version", ["", "0.6.9", "0.8.0", "1.0.0", "0.7.0rc1"])
+@pytest.mark.parametrize("version", ["", "0.6.9", "0.7.0", "0.9.0", "1.0.0", "0.8.0rc1"])
 def test_backend_rejects_unsupported_versions(version):
     backend = SimpleNamespace(__version__=version, Sample=rt._iad.Sample)
     with pytest.raises(ImportError, match="pip install --upgrade"):
@@ -26,7 +26,7 @@ def test_backend_rejects_missing_transport_methods(method):
 
     setattr(IncompleteSample, method, None)
     with pytest.raises(ImportError, match=method):
-        rt._validate_iad_backend(SimpleNamespace(__version__="0.7.0", Sample=IncompleteSample))
+        rt._validate_iad_backend(SimpleNamespace(__version__="0.8.0", Sample=IncompleteSample))
 
 
 def test_backend_rejects_upstream_constructor():
@@ -35,7 +35,7 @@ def test_backend_rejects_upstream_constructor():
             pass
 
     with pytest.raises(ImportError, match="n_sample_boundary"):
-        rt._validate_iad_backend(SimpleNamespace(__version__="0.7.0", Sample=UpstreamSample))
+        rt._validate_iad_backend(SimpleNamespace(__version__="0.8.0", Sample=UpstreamSample))
 
 
 def test_missing_backend_has_actionable_import_error():
@@ -50,7 +50,7 @@ sys.modules['iadpython'] = None
 try:
     import empylib
 except ImportError as error:
-    assert 'radphen-iadpython>=0.7.0,<0.8' in str(error), str(error)
+    assert 'radphen-iadpython>=0.8.0,<0.9' in str(error), str(error)
     assert 'pip install --upgrade' in str(error), str(error)
 else:
     raise AssertionError('missing backend was accepted')
@@ -71,31 +71,33 @@ def _mock_distribution_versions(monkeypatch, versions):
     monkeypatch.setattr(rt._metadata, "version", version)
 
 
-def test_distribution_guard_accepts_supported_fork(monkeypatch):
-    _mock_distribution_versions(monkeypatch, {"radphen-iadpython": "0.7.0"})
+@pytest.mark.parametrize("version", ["0.8.0", "0.8.1", "0.8.0.post1"])
+def test_distribution_guard_accepts_supported_fork(monkeypatch, version):
+    _mock_distribution_versions(monkeypatch, {"radphen-iadpython": version})
     rt._validate_iad_distribution()
+    rt._validate_iad_backend(SimpleNamespace(__version__=version, Sample=rt._iad.Sample))
 
 
-@pytest.mark.parametrize("version", ["0.6.9", "0.8.0", "0.7.0rc1"])
+@pytest.mark.parametrize("version", ["0.6.9", "0.7.0", "0.9.0", "0.8.0rc1"])
 def test_distribution_guard_rejects_metadata_version_independently(monkeypatch, version):
     # Valid module capabilities cannot make unsupported distribution metadata valid.
-    rt._validate_iad_backend(SimpleNamespace(__version__="0.7.0", Sample=rt._iad.Sample))
+    rt._validate_iad_backend(SimpleNamespace(__version__="0.8.0", Sample=rt._iad.Sample))
     _mock_distribution_versions(monkeypatch, {"radphen-iadpython": version})
     with pytest.raises(ImportError, match="distribution version"):
         rt._validate_iad_distribution()
 
 
 def test_module_version_is_checked_after_valid_distribution_metadata(monkeypatch):
-    _mock_distribution_versions(monkeypatch, {"radphen-iadpython": "0.7.0"})
+    _mock_distribution_versions(monkeypatch, {"radphen-iadpython": "0.8.0"})
     rt._validate_iad_distribution()
     with pytest.raises(ImportError, match="Unsupported radphen-iadpython version"):
-        rt._validate_iad_backend(SimpleNamespace(__version__="0.8.0", Sample=rt._iad.Sample))
+        rt._validate_iad_backend(SimpleNamespace(__version__="0.9.0", Sample=rt._iad.Sample))
 
 
 @pytest.mark.parametrize("versions, expected", [
-    ({"iadpython": "0.7.0"}, "distribution is not installed"),
-    ({"iadpython": "0.7.0", "radphen-iadpython": "0.7.0"}, "Conflicting"),
-    ({"radphen-iadpython": "0.8.0"}, "distribution version"),
+    ({"iadpython": "0.8.0"}, "distribution is not installed"),
+    ({"iadpython": "0.8.0", "radphen-iadpython": "0.8.0"}, "Conflicting"),
+    ({"radphen-iadpython": "0.9.0"}, "distribution version"),
 ])
 def test_import_rejects_invalid_distribution_before_loading_module(versions, expected):
     import subprocess
@@ -120,7 +122,7 @@ try:
 except ImportError as error:
     message = str(error)
     assert {expected!r} in message, message
-    assert 'radphen-iadpython>=0.7.0,<0.8' in message, message
+    assert 'radphen-iadpython>=0.8.0,<0.9' in message, message
     if 'Conflicting' in message:
         assert 'fresh environment' in message, message
         assert 'pip uninstall iadpython radphen-iadpython' in message, message

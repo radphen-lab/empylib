@@ -4,12 +4,19 @@ Change Log
 0.2.0 (unreleased)
 ----------------------------
 Packaging and compatibility
+- Align the current development backend with the multilayer fork at version
+  0.8.0: require radphen-iadpython>=0.8.0,<0.9 in packaging, runtime guards
+  and release validation. Require the explicit layers constructor parameter.
+  The earlier 0.7.0 validation below is historical, not evidence for 0.8.0.
+- Pin development CI to the synchronized RadPhen backend commit while keeping
+  publication checks on public PyPI. Stop tracking generated egg-info metadata;
+  existing local editable-install metadata remains on disk.
 - Set the supported runtime to Python >=3.10,<3.15 (Python 3.10–3.14), and
   raised dependency floors to NumPy 1.24, pandas 1.5, SciPy 1.10, PyYAML 6,
   and requests 2.28. Other runtime floors remain typing-extensions 4 and
   colour-science 0.4.6.
 - Replaced the unversioned Git dependency with
-  `radphen-iadpython>=0.7.0,<0.8`, retaining the `iadpython` import
+  `radphen-iadpython>=0.8.0,<0.9`, retaining the `iadpython` import
   package and `iadp` command. Upstream and fork installations are mutually
   exclusive; empylib rejects missing fork metadata and conflicting installs. This fork must be published before
   empylib 0.2.0.

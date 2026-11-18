@@ -7,7 +7,7 @@ below; the workflow filename has no `.github/workflows/` prefix.
 | PyPI form field | Backend | empylib |
 | --- | --- | --- |
 | PyPI project name (pending publisher only) | `radphen-iadpython` | `empylib` |
-| Owner | `PanxoPanza` | `radphen-lab` |
+| Owner | `radphen-lab` | `radphen-lab` |
 | Repository name | `iadpython` | `empylib` |
 | Workflow name | `pypi.yaml` | `publish.yml` |
 | Environment name | `pypi` | `pypi` |
@@ -25,10 +25,10 @@ and [publishers for existing projects](https://docs.pypi.org/trusted-publishers/
 
 After the exact release commits and tags have passed the required CI:
 
-1. In `PanxoPanza/iadpython`, run **Publish radphen-iadpython** (`pypi.yaml`)
-   on tag `v0.7.0`, entering `0.7.0` for `confirm-version`. Approve the `pypi`
+1. In `radphen-lab/iadpython`, run **Publish radphen-iadpython** (`pypi.yaml`)
+   on tag `v0.8.0`, entering `0.8.0` for `confirm-version`. Approve the `pypi`
    environment if GitHub requests it. Wait for the upload and verify
-   [radphen-iadpython 0.7.0](https://pypi.org/project/radphen-iadpython/0.7.0/).
+   [radphen-iadpython 0.8.0](https://pypi.org/project/radphen-iadpython/0.8.0/).
 2. In `radphen-lab/empylib`, run **Publish empylib 0.2.0** (`publish.yml`)
    on tag `v0.2.0`, entering `0.2.0`. Its gate downloads the backend from
    public PyPI and reruns the complete validation matrix. Approve the `pypi`

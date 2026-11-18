@@ -28,7 +28,7 @@ from packaging.utils import canonicalize_name
 
 ROOT = Path(__file__).resolve().parents[2]
 VERSION = "0.2.0"
-BACKEND = "radphen-iadpython>=0.7.0,<0.8"
+BACKEND = "radphen-iadpython>=0.8.0,<0.9"
 DATA_SUFFIXES = {".nk", ".txt", ".xls", ".csv"}
 RELEASE_TESTS = ("tests/test_backend_requirements.py", "tests/test_scipy_integration_compat.py")
 
@@ -68,7 +68,7 @@ def metadata_check(raw, expected_name="empylib", expected_version=VERSION):
     assert all(canonicalize_name(req.name) != "iadpython" for req in requirements)
     backend = [req for req in requirements if canonicalize_name(req.name) == "radphen-iadpython"]
     assert len(backend) == 1
-    assert backend[0].specifier == SpecifierSet(">=0.7.0,<0.8")
+    assert backend[0].specifier == SpecifierSet(">=0.8.0,<0.9")
     assert not backend[0].marker, "Backend must not be optional or platform-conditional"
     return metadata
 
@@ -154,7 +154,7 @@ def fetch_backend(work, url, digest):
         return
     parsed = urllib.parse.urlparse(url)
     assert parsed.scheme == "https" and parsed.netloc == "github.com"
-    assert parsed.path.startswith("/PanxoPanza/iadpython/releases/download/") and parsed.path.endswith(".whl")
+    assert parsed.path.startswith("/radphen-lab/iadpython/releases/download/") and parsed.path.endswith(".whl")
     assert len(digest) == 64 and all(c in "0123456789abcdef" for c in digest.lower())
     wheel = destination / Path(parsed.path).name
     with urllib.request.urlopen(url, timeout=120) as response:
@@ -171,7 +171,7 @@ def validate_backend_wheel(wheel):
         names = archive.namelist()
         metadata = email.message_from_bytes(archive.read(next(n for n in names if n.endswith(".dist-info/METADATA"))))
         assert canonicalize_name(metadata["Name"]) == "radphen-iadpython"
-        assert metadata["Version"] in SpecifierSet(">=0.7.0,<0.8")
+        assert metadata["Version"] in SpecifierSet(">=0.8.0,<0.9")
         requirements = [Requirement(value) for value in metadata.get_all("Requires-Dist", [])]
         assert all(req.url is None for req in requirements), "Direct URL backend dependency"
         assert any(n.startswith("iadpython/") for n in names)
@@ -209,7 +209,7 @@ def installed_smoke(manifest_file):
     assert iadpython.__name__ == "iadpython"
     assert empylib.rad_transfer._iad is iadpython
     assert importlib.util.find_spec("radphen_iadpython") is None
-    assert importlib.metadata.version("radphen-iadpython") in SpecifierSet(">=0.7.0,<0.8")
+    assert importlib.metadata.version("radphen-iadpython") in SpecifierSet(">=0.8.0,<0.9")
     for name in ("color_system", "dense_spheres", "miescattering", "nklib", "rad_transfer",
                  "ref_spectra", "scuffem", "spectrometry", "utils", "waveoptics"):
         importlib.import_module(f"empylib.{name}")

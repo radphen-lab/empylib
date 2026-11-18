@@ -20,15 +20,26 @@ empylib from a local checkout. Build the fork wheel from its source checkout
 and replace the placeholder below with the wheel's actual path:
 
 ```bash
-python -m pip install /path/to/radphen_iadpython-0.7.0-py3-none-any.whl
+python -m pip install /path/to/radphen_iadpython-0.8.0-py3-none-any.whl
 cd /path/to/empylib
 python -m pip install .
 ```
 
-empylib 0.2.0 depends on the `radphen-iadpython>=0.7.0,<0.8` fork, which
+empylib 0.2.0 depends on the `radphen-iadpython>=0.8.0,<0.9` fork, which
 provides the `iadpython` import package and the `iadp` command. The distribution
 name is `radphen-iadpython`; Python code continues to use `import iadpython`. The fork must be published before empylib
 0.2.0 so pip can resolve the dependency.
+
+For local development, install both checkouts in the same environment:
+
+```bash
+python -m pip install -e /path/to/iadpython --config-settings editable_mode=compat
+python -m pip install -e /path/to/empylib --config-settings editable_mode=compat
+```
+
+Use the current fork checkout reporting version 0.8.0. After renaming an older
+editable checkout, remove its stale `iadpython.egg-info` metadata before
+reinstalling; that metadata can otherwise appear as a conflicting upstream install.
 
 If you currently install empylib directly from Git, migrate to the published
 release with:

@@ -63,7 +63,7 @@ setup(
         'requests>=2.28',
         'typing-extensions>=4.0',
         'colour-science>=0.4.6',  # for color science utilities
-        'radphen-iadpython>=0.7.0,<0.8',
+        'radphen-iadpython>=0.8.0,<0.9',
     ],
     packages=find_packages(include=[package_name, package_name + '.*']),
 )

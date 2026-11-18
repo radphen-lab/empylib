@@ -10,9 +10,9 @@ import numpy as _np
 from . import miescattering as _mie
 from . import waveoptics as _wv
 _BACKEND_INSTALL_HELP = (
-    'empylib requires radphen-iadpython>=0.7.0,<0.8 with custom phase functions '
+    'empylib requires radphen-iadpython>=0.8.0,<0.9 with custom phase functions '
     'and complex boundaries. Install it with '
-    '`python -m pip install --upgrade "radphen-iadpython>=0.7.0,<0.8"`.'
+    '`python -m pip install --upgrade "radphen-iadpython>=0.8.0,<0.9"`.'
 )
 from importlib import metadata as _metadata
 
@@ -35,9 +35,9 @@ def _validate_iad_distribution():
             "both provide the iadpython module and can overwrite each other's files. "
             "Use a fresh environment, or repair this environment with "
             "`python -m pip uninstall iadpython radphen-iadpython` followed by "
-            '`python -m pip install "radphen-iadpython>=0.7.0,<0.8"`.'
+            '`python -m pip install "radphen-iadpython>=0.8.0,<0.9"`.'
         )
-    if fullmatch(r"0\.7\.\d+(?:\.post\d+)?", version) is None:
+    if fullmatch(r"0\.8\.\d+(?:\.post\d+)?", version) is None:
         raise ImportError(f"Unsupported radphen-iadpython distribution version {version!r}. " + _BACKEND_INSTALL_HELP)
 
 
@@ -66,11 +66,11 @@ def _validate_iad_backend(backend):
     from re import fullmatch
 
     version = str(getattr(backend, "__version__", ""))
-    if fullmatch(r"0\.7\.\d+(?:\.post\d+)?", version) is None:
+    if fullmatch(r"0\.8\.\d+(?:\.post\d+)?", version) is None:
         raise ImportError(f"Unsupported radphen-iadpython version {version!r}. " + _BACKEND_INSTALL_HELP)
     sample = getattr(backend, "Sample", None)
     required_parameters = {
-        "pf_type", "pf_data", "n_sample_boundary", "n_outer_above", "n_outer_below",
+        "pf_type", "pf_data", "n_sample_boundary", "n_outer_above", "n_outer_below", "layers",
     }
     required_methods = {"rt_matrices", "UX1_and_UXU", "unscattered_rt", "rt_diffuse_cone"}
     try:

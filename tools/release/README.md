@@ -25,7 +25,7 @@ dependency floors (NumPy 1) and SciPy 1.14.1 with NumPy 2.
 
 For prepublication integration CI, dispatch `validation.yml` with
 `backend-source-ref` set to the full 40-hex commit SHA already pushed to public
-`PanxoPanza/iadpython`. CI checks out that exact commit, builds its wheel, and
+`radphen-lab/iadpython`. CI checks out that exact commit, builds its wheel, and
 verifies the distribution/import metadata and absence of direct URL
 requirements before the normal full matrix. This source override is exclusive
 with wheel URL/SHA inputs. It is a CI candidate check, not a user installation
@@ -34,12 +34,14 @@ backend to be available from public PyPI.
 
 Before the renamed backend is on PyPI, dispatch `validation.yml` with the URL of
 an existing wheel release asset under
-`https://github.com/PanxoPanza/iadpython/releases/download/` and its SHA256.
+`https://github.com/radphen-lab/iadpython/releases/download/` and its SHA256.
 The helper verifies the digest, distribution name, version and package namespace.
 The workflow never substitutes original `iadpython` for `radphen-iadpython`.
-Without an explicit wheel, all jobs resolve `radphen-iadpython>=0.7.0,<0.8`
-from public PyPI and fail if it has not been published. Merely creating the
-packaging branch is insufficient; an actual wheel artifact must exist first.
+Development CI defaults to the exact backend commit in
+`tools/release/backend-source-ref.txt`, so source synchronization can be tested
+before PyPI publication. Explicit source or wheel inputs override this pin.
+The publication workflow sets `require-published-backend: true`, disables source
+overrides, and resolves `radphen-iadpython>=0.8.0,<0.9` from public PyPI.
 
 For local checks (use a fresh directory for each run):
 

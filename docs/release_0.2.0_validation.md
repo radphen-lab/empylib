@@ -1,5 +1,14 @@
 # empylib 0.2.0 validation evidence
 
+## Current development backend
+
+Development now requires `radphen-iadpython>=0.8.0,<0.9` for the explicit
+multilayer fork. The evidence below records the earlier 0.7.0 candidate;
+it must not be used to approve publication with the new backend. See
+[backend synchronization checks](backend_0.8.0_validation.md) for current results.
+
+## Historical 0.7.0 candidate
+
 Release source: empylib `7098e3c8b3efe2051ef3a3424ae38c99e662d4ad`;
 backend `5b38031c9b1d4e5763681abeb5775cadfdb543a0`.
 Evidence collected on 2026-11-13. Publication is tracked separately below.
