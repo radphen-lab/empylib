@@ -21,6 +21,27 @@ enforce the same range and require the explicit `layers` constructor parameter.
 
 ## Reproducibility
 
+Implementation commit: `881b17cce512ceacb43f027f34ff7ef197e45c10`.
+
+- Clean backend wheel and sdist builds passed metadata and `twine check`;
+  the sdist includes the JSON multilayer reference fixture and the wheel
+  includes the `iadplus` and `iadsum` command data.
+- Empylib wheel, sdist, and wheel rebuilt from the sdist passed metadata,
+  resource-hash checks for all 42 bundled resources, and `twine check`.
+- Outside-checkout installed regression: 119 passed, one optional reference
+  test skipped, 66 subtests passed. Original wheel, rebuilt wheel, and actual
+  offline sdist installs passed import/resource smoke checks and `pip check`.
+- Upstream-only and both upstream/fork installation orders were rejected;
+  repairing each disposable environment restored successful fork-only imports.
+- Seven workflow input checks covered the default commit pin, explicit source
+  and wheel overrides, publication mode, malformed refs, conflicting inputs,
+  and forbidden publication overrides.
+
+GitHub validation runs:
+
+- [Backend Python 3.10 and 3.14 CI](https://github.com/radphen-lab/iadpython/actions/runs/44374012674)
+- [Empylib distribution and cross-platform regression](https://github.com/radphen-lab/empylib/actions/runs/44374425664)
+
 Development CI builds the exact backend commit recorded in
 `tools/release/backend-source-ref.txt`. Publication continues to require a
 public PyPI backend and cannot substitute the development source pin.
